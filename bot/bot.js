@@ -93,6 +93,7 @@ bot.command('start', async (ctx) => {
             [{ text: '🚀 Open Web App', web_app: { url: webAppUrl } }],
             [{ text: '💰 Balance', callback_data: 'check_balance' }],
             [{ text: '📊 Investments', callback_data: 'my_investments' }],
+            [{ text: '💬 Support', url: 'https://t.me/hashdev_support' }],
           ],
         },
       }
