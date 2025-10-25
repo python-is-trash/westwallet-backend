@@ -90,9 +90,8 @@ bot.command('start', async (ctx) => {
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🚀 Open Web App', web_app: { url: webAppUrl } }],
+            [{ text: '🚀 Start Investing', web_app: { url: webAppUrl } }],
             [{ text: '💰 Balance', callback_data: 'check_balance' }],
-            [{ text: '📊 Investments', callback_data: 'my_investments' }],
             [{ text: '💬 Support', url: 'https://t.me/hashdev_support' }],
           ],
         },
