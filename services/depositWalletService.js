@@ -95,9 +95,21 @@ export const depositWalletService = {
     if (existingStaticAddress) {
       // Use existing static address
       console.log('♻️  Reusing existing static address:', existingStaticAddress.deposit_address);
+
+      // For TON networks, generate memo if not exists
+      let memoValue = existingStaticAddress.memo;
+      if (!memoValue && (staticNetwork === 'TON' || finalCryptoType.includes('TON'))) {
+        memoValue = user.id.toString().padStart(8, '0');
+        console.log('🔢 Generated memo for TON:', memoValue);
+        await supabase
+          .from('user_deposit_addresses')
+          .update({ memo: memoValue })
+          .eq('id', existingStaticAddress.id);
+      }
+
       addressData = {
         address: existingStaticAddress.deposit_address,
-        dest_tag: existingStaticAddress.memo || ''
+        dest_tag: memoValue || ''
       };
       label = `deposit_${user.id}_${Date.now()}`;
 
@@ -117,6 +129,12 @@ export const depositWalletService = {
         label,
         ipnUrl
       );
+
+      // For TON networks, if WestWallet didn't provide memo, generate one
+      if (!addressData.dest_tag && (staticNetwork === 'TON' || finalCryptoType.includes('TON'))) {
+        addressData.dest_tag = user.id.toString().padStart(8, '0');
+        console.log('🔢 Generated memo for new TON address:', addressData.dest_tag);
+      }
 
       // Save as static address for future reuse
       await supabase
