@@ -509,7 +509,12 @@ export const depositWalletService = {
 
     if (!deposit) throw new Error('Deposit not found');
 
-    return deposit;
+    // Add credited_amount field for frontend compatibility
+    return {
+      ...deposit,
+      credited_amount: deposit.amount,
+      currency: deposit.crypto_type
+    };
   },
 
   async getUserDeposits(telegramId) {
