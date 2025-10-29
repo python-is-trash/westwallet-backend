@@ -116,7 +116,7 @@ bot.on('callback_query:data', async (ctx) => {
     const t = TRANSLATIONS[lang];
 
     await setUserLanguage(supabase, userId, lang);
-    await ctx.answerCbQuery(t.languageSet);
+    await ctx.answerCallbackQuery(t.languageSet);
     await ctx.editMessageText(
       t.welcome(firstName) + '\n\n' +
         t.commandsTitle + '\n' +
@@ -146,7 +146,7 @@ bot.on('callback_query:data', async (ctx) => {
     const t = TRANSLATIONS[lang];
 
     await setUserLanguage(supabase, userId, lang);
-    await ctx.answerCbQuery(t.languageSet);
+    await ctx.answerCallbackQuery(t.languageSet);
     await ctx.editMessageText(t.languageChangeSuccess);
     return;
   }
@@ -196,7 +196,7 @@ bot.on('callback_query:data', async (ctx) => {
 
     if (error) {
       console.error('Error creating user:', error);
-      await ctx.answerCbQuery('❌ Error creating account');
+      await ctx.answerCallbackQuery('❌ Error creating account');
       return;
     }
 
@@ -209,7 +209,7 @@ bot.on('callback_query:data', async (ctx) => {
 
     console.log(`✅ New user registered: ${userId} (${username}) - Language: ${lang}`);
 
-    await ctx.answerCbQuery(t.languageSet);
+    await ctx.answerCallbackQuery(t.languageSet);
     await ctx.editMessageText(
       t.welcome(firstName) + '\n\n' +
         t.commandsTitle + '\n' +
@@ -243,7 +243,7 @@ bot.on('callback_query:data', async (ctx) => {
       .maybeSingle();
 
     if (!user) {
-      await ctx.answerCbQuery(t.errorNotFound);
+      await ctx.answerCallbackQuery(t.errorNotFound);
       return;
     }
 
@@ -260,7 +260,7 @@ ${t.balanceTitle}
 ${t.totalBalance}: $${((user.balance_usdt || 0) + (user.balance_usdc || 0) + (user.balance_bnb || 0) + (user.balance_eth || 0) + (user.balance_ton || 0) + (user.balance_sol || 0)).toFixed(2)}
 `;
 
-    await ctx.answerCbQuery();
+    await ctx.answerCallbackQuery();
     await ctx.reply(message);
   }
 });
