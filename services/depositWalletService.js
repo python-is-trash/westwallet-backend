@@ -45,18 +45,99 @@ export const depositWalletService = {
       finalCryptoType = network; // network should be USDTTRC, USDTERC, or USDTBEP
     }
 
-    // Create unique label for tracking
-    const label = `deposit_${user.id}_${Date.now()}`;
+    // Map crypto type to base type and network for static address lookup
+    let baseCryptoType;
+    let staticNetwork;
 
-    // IPN callback URL
-    const ipnUrl = `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/westwallet/callback`;
+    // Parse crypto type and network
+    if (finalCryptoType === 'USDTTRC' || finalCryptoType === 'USDTBEP' || finalCryptoType === 'USDTERC' || finalCryptoType === 'USDTTON') {
+      baseCryptoType = 'USDT';
+      if (finalCryptoType === 'USDTTRC') staticNetwork = 'TRC20';
+      else if (finalCryptoType === 'USDTBEP') staticNetwork = 'BEP20';
+      else if (finalCryptoType === 'USDTERC') staticNetwork = 'ERC20';
+      else if (finalCryptoType === 'USDTTON') staticNetwork = 'TON';
+    } else if (finalCryptoType === 'USDCERC' || finalCryptoType === 'USDCBEP') {
+      baseCryptoType = 'USDC';
+      if (finalCryptoType === 'USDCERC') staticNetwork = 'ERC20';
+      else if (finalCryptoType === 'USDCBEP') staticNetwork = 'BEP20';
+    } else if (finalCryptoType === 'TON') {
+      baseCryptoType = 'TON';
+      staticNetwork = 'TON';
+    } else if (finalCryptoType === 'SOL') {
+      baseCryptoType = 'SOL';
+      staticNetwork = 'SOL';
+    } else if (finalCryptoType === 'BNB') {
+      baseCryptoType = 'BNB';
+      staticNetwork = 'BEP20';
+    } else if (finalCryptoType === 'ETH') {
+      baseCryptoType = 'ETH';
+      staticNetwork = 'ERC20';
+    } else {
+      // Fallback
+      baseCryptoType = finalCryptoType;
+      staticNetwork = 'TRC20';
+    }
 
-    // Generate deposit address via WestWallet API
-    const addressData = await westwalletService.generateDepositAddress(
-      finalCryptoType,
-      label,
-      ipnUrl
-    );
+    console.log(`🔍 Looking for static address: crypto=${baseCryptoType}, network=${staticNetwork}`);
+
+    // Check if user already has a static address for this crypto+network
+    const { data: existingStaticAddress } = await supabase
+      .from('user_deposit_addresses')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('crypto_type', baseCryptoType)
+      .eq('network', staticNetwork)
+      .maybeSingle();
+
+    let addressData;
+    let label;
+
+    if (existingStaticAddress) {
+      // Use existing static address
+      console.log('♻️  Reusing existing static address:', existingStaticAddress.deposit_address);
+      addressData = {
+        address: existingStaticAddress.deposit_address,
+        dest_tag: existingStaticAddress.memo || ''
+      };
+      label = `deposit_${user.id}_${Date.now()}`;
+
+      // Update last_used_at
+      await supabase
+        .from('user_deposit_addresses')
+        .update({ last_used_at: new Date().toISOString() })
+        .eq('id', existingStaticAddress.id);
+    } else {
+      // Generate NEW address via WestWallet API
+      label = `deposit_${user.id}_${Date.now()}`;
+      const ipnUrl = `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/westwallet/callback`;
+
+      console.log('🆕 Generating new deposit address via WestWallet...');
+      addressData = await westwalletService.generateDepositAddress(
+        finalCryptoType,
+        label,
+        ipnUrl
+      );
+
+      // Save as static address for future reuse
+      await supabase
+        .from('user_deposit_addresses')
+        .insert({
+          user_id: user.id,
+          crypto_type: baseCryptoType,
+          network: staticNetwork || 'TRC20',
+          deposit_address: addressData.address,
+          memo: addressData.dest_tag || null
+        })
+        .select()
+        .single()
+        .then(result => {
+          if (result.error) {
+            console.warn('⚠️  Could not save static address (may already exist):', result.error.message);
+          } else {
+            console.log('✅ Saved as static address for future reuse');
+          }
+        });
+    }
 
     // Save deposit record with network info
     const { data: depositRecord, error: depositError } = await supabase.from('deposits').insert({
