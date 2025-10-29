@@ -380,6 +380,27 @@ export const depositWalletService = {
     if (status === 'completed') {
       const cryptoType = (txData.currency || deposit.crypto_type || 'USDT').toUpperCase();
       const depositAmount = parseFloat(txData.amount || deposit.amount);
+      const blockchainHash = txData.blockchain_hash;
+
+      // CRITICAL: Check if already credited to prevent double-credit
+      if (blockchainHash) {
+        const { data: existingCredit } = await supabase
+          .from('operation_history')
+          .select('id')
+          .eq('user_id', deposit.user_id)
+          .eq('operation_type', 'deposit')
+          .eq('amount', depositAmount)
+          .eq('crypto_type', cryptoType)
+          .eq('description', `Deposit completed: ${depositAmount} ${cryptoType} - ${blockchainHash}`)
+          .maybeSingle();
+
+        if (existingCredit) {
+          console.log('⏭️  SKIPPING: Already credited (found in operation_history)');
+          console.log('   Operation ID:', existingCredit.id);
+          console.log('   Blockchain Hash:', blockchainHash);
+          return; // Skip crediting
+        }
+      }
 
       console.log('💰 Crediting user balance:');
       console.log('   Crypto Type:', cryptoType);
