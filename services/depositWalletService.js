@@ -1,0 +1,410 @@
+import { supabase } from '../db/supabase.js';
+import { westwalletService } from './westwalletService.js';
+import { moralisService } from './moralisService.js';
+
+export const initWestWallet = (publicKey, privateKey) => {
+  if (publicKey && privateKey) {
+    console.log('✅ WestWallet service initialized with keys');
+    return true;
+  }
+  console.log('⚠️  WestWallet keys not found - deposit features will be limited');
+  return false;
+};
+
+export const depositWalletService = {
+  async createDeposit(telegramId, amount, cryptoType = 'USDTBEP', network = null) {
+    const WESTWALLET_PUBLIC_KEY = process.env.WESTWALLET_PUBLIC_KEY;
+    const WESTWALLET_PRIVATE_KEY = process.env.WESTWALLET_PRIVATE_KEY;
+
+    if (!WESTWALLET_PUBLIC_KEY || !WESTWALLET_PRIVATE_KEY) {
+      throw new Error('WestWallet service not initialized. Please add WESTWALLET keys to .env');
+    }
+
+    // Get user with proper error handling
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('telegram_id', parseInt(telegramId))
+      .maybeSingle();
+
+    if (userError) {
+      console.error('❌ Error fetching user:', userError);
+      throw new Error(`Database error: ${userError.message}`);
+    }
+
+    if (!user) {
+      console.error('❌ User not found for telegram_id:', telegramId);
+      throw new Error('User not found. Please start the bot first with /start command.');
+    }
+
+    console.log('✅ User found:', { id: user.id, telegram_id: user.telegram_id, username: user.username });
+
+    // Handle network parameter for USDT
+    let finalCryptoType = cryptoType;
+    if (network && cryptoType.toUpperCase().startsWith('USDT')) {
+      finalCryptoType = network; // network should be USDTTRC, USDTERC, or USDTBEP
+    }
+
+    // Create unique label for tracking
+    const label = `deposit_${user.id}_${Date.now()}`;
+
+    // IPN callback URL
+    const ipnUrl = `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/westwallet/callback`;
+
+    // Generate deposit address via WestWallet API
+    const addressData = await westwalletService.generateDepositAddress(
+      finalCryptoType,
+      label,
+      ipnUrl
+    );
+
+    // Save deposit record with network info
+    const { data: depositRecord, error: depositError } = await supabase.from('deposits').insert({
+      user_id: user.id,
+      order_id: label,
+      amount,
+      crypto_type: finalCryptoType,
+      payment_id: addressData.dest_tag || '',
+      status: 'pending',
+      payment_url: addressData.address,
+    }).select().single();
+
+    if (depositError) {
+      console.error('❌ Failed to create deposit record:', depositError);
+      throw new Error(`Failed to create deposit: ${depositError.message}`);
+    }
+
+    console.log('✅ Deposit record created:', label, finalCryptoType, amount);
+
+    // Build QR code data with amount
+    let qr_data = addressData.address;
+    if (addressData.dest_tag) {
+      qr_data = `${addressData.address}?dt=${addressData.dest_tag}&amount=${amount}`;
+    } else if (finalCryptoType.toUpperCase().includes('USDT')) {
+      qr_data = `${addressData.address}?amount=${amount}`;
+    }
+
+    return {
+      address: addressData.address,
+      dest_tag: addressData.dest_tag || '',
+      currency: finalCryptoType,
+      network: westwalletService.getNetworkDisplayName(finalCryptoType),
+      amount: amount,
+      label: label,
+      qr_data: qr_data,
+    };
+  },
+
+  async processCallback(label, status, txData = {}) {
+    console.log('🔄 Processing callback for label:', label);
+    console.log('   Status:', status);
+    console.log('   TX Data:', JSON.stringify(txData, null, 2));
+
+    // STRATEGY 1: Try to find by label first (exact match)
+    let { data: deposit, error: depositFetchError } = await supabase
+      .from('deposits')
+      .select('*, users(*)')
+      .eq('order_id', label)
+      .maybeSingle();
+
+    if (depositFetchError) {
+      console.error('❌ Error fetching deposit:', depositFetchError);
+      throw new Error(`Failed to fetch deposit: ${depositFetchError.message}`);
+    }
+
+    // STRATEGY 2: If not found by label, try to find by ADDRESS (for reused addresses)
+    if (!deposit && txData.address) {
+      console.log('⚠️  Deposit not found by label, trying to find by address:', txData.address);
+
+      // Find the most recent pending deposit for this address
+      const { data: addressMatch } = await supabase
+        .from('deposits')
+        .select('*, users(*)')
+        .eq('payment_url', txData.address)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (addressMatch && addressMatch.length > 0) {
+        deposit = addressMatch[0];
+        console.log('✅ Found deposit by address match:', deposit.order_id);
+      }
+    }
+
+    // STRATEGY 3: If still not found, extract user_id from label and find latest pending deposit
+    if (!deposit) {
+      const userId = label.split('_')[1]; // Extract user_id from label (e.g., "deposit_13_xxx" -> "13")
+      console.log('⚠️  Trying to find latest pending deposit for user:', userId);
+
+      const { data: userDeposits } = await supabase
+        .from('deposits')
+        .select('*, users(*)')
+        .eq('user_id', userId)
+        .eq('status', 'pending')
+        .eq('crypto_type', txData.currency || 'USDTTRC')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (userDeposits && userDeposits.length > 0) {
+        deposit = userDeposits[0];
+        console.log('✅ Found deposit by user_id + crypto match:', deposit.order_id);
+        console.log('   Note: Original label was', label, 'but using', deposit.order_id);
+      }
+    }
+
+    // STRATEGY 4: Check if this is a static address from user_deposit_addresses
+    // If WestWallet sent a payment to a permanent address, create the deposit record now
+    if (!deposit && txData.address) {
+      console.log('⚠️  Checking if this is a static/permanent address...');
+
+      const { data: staticAddress } = await supabase
+        .from('user_deposit_addresses')
+        .select('*, users:user_id(*)')
+        .eq('deposit_address', txData.address)
+        .maybeSingle();
+
+      if (staticAddress) {
+        console.log('✅ Found static address for user:', staticAddress.user_id);
+        console.log('   Creating deposit record automatically...');
+
+        // Create deposit record for this payment
+        const { data: newDeposit, error: createError } = await supabase
+          .from('deposits')
+          .insert({
+            user_id: staticAddress.user_id,
+            order_id: label, // Use the label from WestWallet
+            amount: txData.amount || 0,
+            crypto_type: txData.currency || staticAddress.crypto_type || 'USDTTRC',
+            payment_url: txData.address,
+            payment_id: txData.id?.toString() || '',
+            status: 'pending',
+            blockchain_hash: txData.blockchain_hash || '',
+            blockchain_confirmations: txData.blockchain_confirmations || 0,
+          })
+          .select('*, users(*)')
+          .single();
+
+        if (createError) {
+          console.error('❌ Failed to create deposit record:', createError);
+          throw new Error(`Failed to auto-create deposit: ${createError.message}`);
+        }
+
+        deposit = newDeposit;
+        console.log('✅ Auto-created deposit record:', deposit.order_id);
+
+        // Update last_used_at for the static address
+        await supabase
+          .from('user_deposit_addresses')
+          .update({ last_used_at: new Date().toISOString() })
+          .eq('id', staticAddress.id);
+      }
+    }
+
+    if (!deposit) {
+      console.error('❌ Deposit not found for label:', label);
+      console.error('   Address:', txData.address);
+      console.error('   Currency:', txData.currency);
+
+      // DEBUG: Check if ANY deposits exist for this user
+      const userId = label.split('_')[1];
+      const { data: allUserDeposits } = await supabase
+        .from('deposits')
+        .select('order_id, payment_url, crypto_type, created_at, status')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      console.error('   Recent deposits for user', userId, ':', allUserDeposits);
+
+      // Also check static addresses
+      const { data: staticAddresses } = await supabase
+        .from('user_deposit_addresses')
+        .select('*')
+        .eq('user_id', userId);
+
+      console.error('   Static addresses for user', userId, ':', staticAddresses);
+      throw new Error(`Deposit not found for label: ${label}. No matching deposit record or static address found.`);
+    }
+
+    console.log('✅ Deposit found:', {
+      id: deposit.id,
+      user_id: deposit.user_id,
+      amount: deposit.amount,
+      crypto_type: deposit.crypto_type,
+      status: deposit.status
+    });
+
+    if (deposit.status === 'completed') {
+      console.log('⚠️  Deposit already processed:', label);
+      return;
+    }
+
+    // If blockchain hash is provided, verify with Moralis
+    let moralisVerification = null;
+    if (txData.blockchain_hash && status === 'completed') {
+      console.log(`🔍 Verifying transaction with Moralis: ${txData.blockchain_hash}`);
+      try {
+        moralisVerification = await moralisService.verifyDeposit(
+          txData.blockchain_hash,
+          txData.currency || deposit.crypto_type,
+          txData.amount || deposit.amount,
+          txData.address || deposit.payment_url
+        );
+        console.log('✅ Moralis verification result:', moralisVerification);
+      } catch (moralisError) {
+        console.error('⚠️  Moralis verification failed:', moralisError.message);
+        console.error('   Continuing without verification...');
+      }
+
+      // Store verification data if successful
+      if (moralisVerification?.verified) {
+        const { error: verifyUpdateError } = await supabase
+          .from('deposits')
+          .update({
+            blockchain_confirmations: moralisVerification.confirmations,
+            blockchain_verified: true,
+            verification_data: moralisVerification
+          })
+          .eq('order_id', label);
+
+        if (verifyUpdateError) {
+          console.error('❌ Failed to update verification data:', verifyUpdateError);
+        }
+      }
+    }
+
+    // Update deposit status with transaction details
+    // IMPORTANT: Update amount to actual received amount from WestWallet
+    const actualAmount = txData.amount || deposit.amount;
+    const { error: statusUpdateError } = await supabase
+      .from('deposits')
+      .update({
+        status: status === 'completed' ? 'completed' : 'pending',
+        amount: actualAmount, // Update to actual received amount
+        payment_id: txData.id || '',
+        blockchain_hash: txData.blockchain_hash || '',
+        blockchain_confirmations: txData.blockchain_confirmations || 0,
+        updated_at: new Date().toISOString()
+      })
+      .eq('order_id', label);
+
+    if (statusUpdateError) {
+      console.error('❌ Failed to update deposit status:', statusUpdateError);
+      throw new Error(`Failed to update deposit status: ${statusUpdateError.message}`);
+    }
+
+    console.log('✅ Deposit status updated to:', status);
+
+    // If payment is complete, add balance to user
+    if (status === 'completed') {
+      const cryptoType = (txData.currency || deposit.crypto_type || 'USDT').toUpperCase();
+      const depositAmount = parseFloat(txData.amount || deposit.amount);
+
+      console.log('💰 Crediting user balance:');
+      console.log('   Crypto Type:', cryptoType);
+      console.log('   Amount:', depositAmount);
+      console.log('   User ID:', deposit.user_id);
+      console.log('   Telegram ID:', deposit.users.telegram_id);
+
+      // Map crypto type to database column
+      const cryptoColumn = `balance_${cryptoType.toLowerCase()}`;
+
+      // Verify column exists
+      const validColumns = [
+        'balance_usdt', 'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+        'balance_usdc', 'balance_usdcerc', 'balance_usdcbep',
+        'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
+      ];
+
+      if (!validColumns.includes(cryptoColumn)) {
+        console.error('❌ Invalid crypto column:', cryptoColumn);
+        console.error('   Valid columns:', validColumns.join(', '));
+        throw new Error(`Invalid crypto type: ${cryptoType}. Column ${cryptoColumn} does not exist.`);
+      }
+
+      console.log('   Database Column:', cryptoColumn);
+
+      const currentBalance = parseFloat(deposit.users[cryptoColumn] || 0);
+      const newBalance = currentBalance + depositAmount;
+
+      console.log('   Current Balance:', currentBalance);
+      console.log('   New Balance:', newBalance);
+
+      // Update user balance and verify it was successful
+      const { data: updateResult, error: balanceUpdateError } = await supabase
+        .from('users')
+        .update({ [cryptoColumn]: newBalance })
+        .eq('id', deposit.user_id)
+        .select();
+
+      if (balanceUpdateError) {
+        console.error('❌ CRITICAL: Failed to update user balance:', balanceUpdateError);
+        throw new Error(`Failed to update balance: ${balanceUpdateError.message}`);
+      }
+
+      // Verify the update actually affected a row
+      if (!updateResult || updateResult.length === 0) {
+        console.error('❌ CRITICAL: User not found or balance update failed!');
+        console.error('   User ID:', deposit.user_id);
+        console.error('   This means the user was deleted or doesn\'t exist!');
+        throw new Error(`User not found (ID: ${deposit.user_id}). Cannot credit balance.`);
+      }
+
+      console.log('✅ User balance updated successfully!');
+
+      // Log transaction with Moralis verification status
+      const verificationNote = moralisVerification?.verified
+        ? ` ✅ Verified (${moralisVerification.confirmations} confirmations)`
+        : '';
+
+      const { error: historyError } = await supabase.from('operation_history').insert({
+        user_id: deposit.user_id,
+        operation_type: 'deposit',
+        amount: depositAmount,
+        crypto_type: cryptoType,
+        description: `Deposit completed: ${depositAmount} ${cryptoType} - ${txData.blockchain_hash || 'N/A'}${verificationNote}`,
+      });
+
+      if (historyError) {
+        console.error('⚠️  Failed to log operation history:', historyError);
+      }
+
+      console.log('\n✅✅✅ DEPOSIT COMPLETED SUCCESSFULLY! ✅✅✅');
+      console.log(`   User: ${deposit.users.telegram_id}`);
+      console.log(`   Amount: ${depositAmount} ${cryptoType}`);
+      console.log(`   New Balance: ${newBalance}`);
+      if (moralisVerification?.verified) {
+        console.log(`   Moralis Verified: ${moralisVerification.confirmations} confirmations`);
+      }
+      console.log('\n');
+    }
+  },
+
+  async getDepositStatus(orderId) {
+    const { data: deposit } = await supabase
+      .from('deposits')
+      .select('*')
+      .eq('order_id', orderId)
+      .single();
+
+    if (!deposit) throw new Error('Deposit not found');
+
+    return deposit;
+  },
+
+  async getUserDeposits(telegramId) {
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('telegram_id', parseInt(telegramId))
+      .single();
+
+    const { data: deposits } = await supabase
+      .from('deposits')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    return deposits || [];
+  },
+};
