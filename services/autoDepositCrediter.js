@@ -128,10 +128,26 @@ export const autoDepositCrediter = {
 
         if (existingDeposit) {
           if (existingDeposit.status === 'completed') {
-            console.log(`   ⏭️  TX ${tx.id} already credited`);
+            console.log(`   ⏭️  TX ${tx.id} already credited (deposit record exists)`);
             continue;
           }
           // If pending, we'll update it below
+        }
+
+        // ALSO check operation_history to catch manual credits
+        const { data: existingOperation } = await supabase
+          .from('operation_history')
+          .select('id')
+          .eq('user_id', staticAddr.user_id)
+          .eq('operation_type', 'deposit')
+          .eq('amount', parseFloat(tx.amount))
+          .eq('crypto_type', tx.currency)
+          .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) // Last 30 days
+          .maybeSingle();
+
+        if (existingOperation) {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found in operation history)`);
+          continue;
         }
 
         // Credit this transaction
