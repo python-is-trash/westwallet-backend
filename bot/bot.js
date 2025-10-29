@@ -144,12 +144,11 @@ bot.on('callback_query:data', async (ctx) => {
           first_name: firstName,
           language_preference: lang,
           referrer_id: referrerId,
-          balance_usdt: 1000,
-          balance_usdtbep: 0,
+          // Give starting balance in BEP-20 (not balance_usdt, that's generated)
+          balance_usdtbep: 1000,
           balance_usdterc: 0,
           balance_usdttrc: 0,
           balance_usdtton: 0,
-          balance_usdc: 0,
           balance_usdcerc: 0,
           balance_usdcbep: 0,
           balance_bnb: 0,
@@ -161,8 +160,9 @@ bot.on('callback_query:data', async (ctx) => {
         .single();
 
       if (error) {
-        console.error('Error creating user:', error);
-        await ctx.answerCallbackQuery('❌ Error creating account');
+        console.error('❌ Error creating user:', error);
+        console.error('   Details:', JSON.stringify(error, null, 2));
+        await ctx.answerCallbackQuery('❌ Error creating account. Please try again.');
         return;
       }
 
