@@ -99,10 +99,14 @@ export const autoDepositCrediter = {
       const addressMatch = tx.address === staticAddr.deposit_address;
       const isCompleted = tx.status === 'completed' || tx.status === 'confirmed';
 
-      // For TON, also match memo/dest_tag if present
+      // For TON and other memo-based cryptos, match memo/dest_tag correctly
       let memoMatch = true;
-      if (tx.dest_tag && staticAddr.memo) {
+      if (staticAddr.memo) {
+        // If address has memo (e.g., TON), transaction MUST have matching memo
         memoMatch = tx.dest_tag === staticAddr.memo;
+      } else if (tx.dest_tag) {
+        // If tx has memo but address doesn't, it's for a different user
+        memoMatch = false;
       }
 
       return addressMatch && isCompleted && memoMatch;
