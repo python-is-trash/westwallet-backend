@@ -102,11 +102,11 @@ router.post('/deposits/auto-credit', async (req, res) => {
 router.post('/withdraw', async (req, res) => {
   try {
     const userId = req.headers['x-user-id'] || req.body.userId;
-    const { amount, address } = req.body;
+    const { amount, address, crypto, network, memo } = req.body;
     if (!userId || !amount || amount <= 0) {
       throw new Error('Invalid userId or amount');
     }
-    const data = await withdrawalService.request(userId, amount, address);
+    const data = await withdrawalService.request(userId, amount, address, crypto, network, memo);
     res.json({ success: true, data });
   } catch (error) {
     res.status(400).json({ success: false, error: error.message });
