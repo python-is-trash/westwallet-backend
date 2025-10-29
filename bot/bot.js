@@ -158,56 +158,109 @@ bot.on('callback_query:data', async (ctx) => {
     const startPayload = parts[2] || ''; // referral code if present
     const t = TRANSLATIONS[lang];
 
-    let referrerId = null;
-    if (startPayload && startPayload.startsWith('ref')) {
-      const referralCode = startPayload.replace('ref', '');
-      const { data: referrer } = await supabase
-        .from('users')
-        .select('id')
-        .eq('referral_code', referralCode)
-        .maybeSingle();
-      if (referrer) referrerId = referrer.id;
-    }
-
-    // Create user with selected language
-    const { data: newUser, error } = await supabase
+    // Check if user already exists (might have been created by frontend)
+    const { data: existingUser } = await supabase
       .from('users')
-      .insert({
-        telegram_id: userId,
-        username,
-        first_name: firstName,
+      .select('*')
+      .eq('telegram_id', userId)
+      .maybeSingle();
+
+    let finalUser;
+
+    if (existingUser) {
+      // User exists (created by frontend), just update language and referrer if needed
+      console.log(`✅ User ${userId} exists, updating language to ${lang}`);
+
+      let referrerId = null;
+      if (startPayload && startPayload.startsWith('ref') && !existingUser.referrer_id) {
+        const referralCode = startPayload.replace('ref', '');
+        const { data: referrer } = await supabase
+          .from('users')
+          .select('id')
+          .eq('referral_code', referralCode)
+          .maybeSingle();
+        if (referrer) referrerId = referrer.id;
+      }
+
+      const updateData = {
         language_preference: lang,
-        referrer_id: referrerId,
-        balance_usdt: 1000,
-        balance_usdtbep: 0,
-        balance_usdterc: 0,
-        balance_usdttrc: 0,
-        balance_usdtton: 0,
-        balance_usdc: 0,
-        balance_usdcerc: 0,
-        balance_usdcbep: 0,
-        balance_bnb: 0,
-        balance_eth: 0,
-        balance_ton: 0,
-        balance_sol: 0
-      })
-      .select()
-      .single();
+        first_name: firstName || existingUser.first_name,
+        username: username || existingUser.username
+      };
 
-    if (error) {
-      console.error('Error creating user:', error);
-      await ctx.answerCallbackQuery('❌ Error creating account');
-      return;
+      if (referrerId && !existingUser.referrer_id) {
+        updateData.referrer_id = referrerId;
+      }
+
+      const { data: updatedUser } = await supabase
+        .from('users')
+        .update(updateData)
+        .eq('telegram_id', userId)
+        .select()
+        .single();
+
+      finalUser = updatedUser;
+
+      if (referrerId && !existingUser.referrer_id) {
+        await supabase.rpc('build_referral_hierarchy', {
+          user_id: finalUser.id,
+          new_referrer_id: referrerId
+        });
+      }
+    } else {
+      // User doesn't exist, create new
+      let referrerId = null;
+      if (startPayload && startPayload.startsWith('ref')) {
+        const referralCode = startPayload.replace('ref', '');
+        const { data: referrer } = await supabase
+          .from('users')
+          .select('id')
+          .eq('referral_code', referralCode)
+          .maybeSingle();
+        if (referrer) referrerId = referrer.id;
+      }
+
+      const { data: newUser, error } = await supabase
+        .from('users')
+        .insert({
+          telegram_id: userId,
+          username,
+          first_name: firstName,
+          language_preference: lang,
+          referrer_id: referrerId,
+          balance_usdt: 1000,
+          balance_usdtbep: 0,
+          balance_usdterc: 0,
+          balance_usdttrc: 0,
+          balance_usdtton: 0,
+          balance_usdc: 0,
+          balance_usdcerc: 0,
+          balance_usdcbep: 0,
+          balance_bnb: 0,
+          balance_eth: 0,
+          balance_ton: 0,
+          balance_sol: 0
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error creating user:', error);
+        await ctx.answerCallbackQuery('❌ Error creating account');
+        return;
+      }
+
+      finalUser = newUser;
+
+      if (referrerId) {
+        await supabase.rpc('build_referral_hierarchy', {
+          user_id: finalUser.id,
+          new_referrer_id: referrerId
+        });
+      }
+
+      console.log(`✅ New user registered: ${userId} (${username}) - Language: ${lang}`);
     }
-
-    if (referrerId) {
-      await supabase.rpc('build_referral_hierarchy', {
-        user_id: newUser.id,
-        new_referrer_id: referrerId
-      });
-    }
-
-    console.log(`✅ New user registered: ${userId} (${username}) - Language: ${lang}`);
 
     await ctx.answerCallbackQuery(t.languageSet);
     await ctx.editMessageText(
