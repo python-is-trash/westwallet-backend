@@ -28,73 +28,29 @@ bot.command('start', async (ctx) => {
   const startPayload = ctx.match;
 
   try {
+    // Check if user exists
     let { data: user } = await supabase
       .from('users')
       .select('*')
       .eq('telegram_id', userId)
       .maybeSingle();
 
-    console.log(`/start from user ${userId}, exists: ${!!user}, language: ${user?.language_preference}`);
+    console.log(`/start from user ${userId}, exists: ${!!user}, payload: ${startPayload}`);
 
-    if (!user) {
-      // NEW USER - Show language selection FIRST
-      await ctx.reply(
-        '🌍 Welcome! / Добро пожаловать! / ¡Bienvenido!\n\nPlease select your language / Выберите язык / Seleccione su idioma:',
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🇬🇧 English', callback_data: `lang_en_${startPayload || ''}` }],
-              [{ text: '🇷🇺 Русский', callback_data: `lang_ru_${startPayload || ''}` }],
-              [{ text: '🇪🇸 Español', callback_data: `lang_es_${startPayload || ''}` }]
-            ]
-          }
-        }
-      );
-      return;
-    }
+    // ALWAYS show language selection on /start
+    const message = user
+      ? '🌍 Welcome back! / С возвращением! / ¡Bienvenido de nuevo!\n\nPlease select your language / Выберите язык / Seleccione su idioma:'
+      : '🌍 Welcome! / Добро пожаловать! / ¡Bienvenido!\n\nPlease select your language / Выберите язык / Seleccione su idioma:';
 
-    // EXISTING USER - Check if they have language set
-    if (!user.language_preference) {
-      // Show language selection for existing users without language set
-      await ctx.reply(
-        '🌍 Welcome back! / С возвращением! / ¡Bienvenido de nuevo!\n\nPlease select your language / Выберите язык / Seleccione su idioma:',
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🇬🇧 English', callback_data: 'setlang_en' }],
-              [{ text: '🇷🇺 Русский', callback_data: 'setlang_ru' }],
-              [{ text: '🇪🇸 Español', callback_data: 'setlang_es' }]
-            ]
-          }
-        }
-      );
-      return;
-    }
-
-    // Show menu in their language
-    const lang = user.language_preference;
-    const t = TRANSLATIONS[lang];
-
-    await ctx.reply(
-      t.welcome(firstName) + '\n\n' +
-        t.commandsTitle + '\n' +
-        t.cmdBalance + '\n' +
-        t.cmdInvest + '\n' +
-        t.cmdMyInvest + '\n' +
-        t.cmdPnl + '\n' +
-        t.cmdReferral + '\n' +
-        t.cmdLanguage + '\n\n' +
-        t.useWebApp,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: t.btnStartInvesting, web_app: { url: webAppUrl } }],
-            [{ text: t.btnBalance, callback_data: 'check_balance' }],
-            [{ text: t.btnSupport, url: 'https://t.me/hashdev_support' }]
-          ]
-        }
+    await ctx.reply(message, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🇬🇧 English', callback_data: `lang_en_${startPayload || ''}` }],
+          [{ text: '🇷🇺 Русский', callback_data: `lang_ru_${startPayload || ''}` }],
+          [{ text: '🇪🇸 Español', callback_data: `lang_es_${startPayload || ''}` }]
+        ]
       }
-    );
+    });
   } catch (error) {
     console.error('Error in /start:', error);
     await ctx.reply('❌ Sorry, there was an error. Please try again later.');
@@ -110,48 +66,8 @@ bot.on('callback_query:data', async (ctx) => {
 
   console.log(`Callback received: ${data} from user ${userId}`);
 
-  // Handle setlang for existing users without language (from /start)
-  if (data.startsWith('setlang_')) {
-    const lang = data.replace('setlang_', '');
-    const t = TRANSLATIONS[lang];
-
-    await setUserLanguage(supabase, userId, lang);
-    await ctx.answerCallbackQuery(t.languageSet);
-    await ctx.editMessageText(
-      t.welcome(firstName) + '\n\n' +
-        t.commandsTitle + '\n' +
-        t.cmdBalance + '\n' +
-        t.cmdInvest + '\n' +
-        t.cmdMyInvest + '\n' +
-        t.cmdPnl + '\n' +
-        t.cmdReferral + '\n' +
-        t.cmdLanguage + '\n\n' +
-        t.useWebApp,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: t.btnStartInvesting, web_app: { url: webAppUrl } }],
-            [{ text: t.btnBalance, callback_data: 'check_balance' }],
-            [{ text: t.btnSupport, url: 'https://t.me/hashdev_support' }]
-          ]
-        }
-      }
-    );
-    return;
-  }
-
-  // Handle changelang from /language command
-  if (data.startsWith('changelang_')) {
-    const lang = data.replace('changelang_', '');
-    const t = TRANSLATIONS[lang];
-
-    await setUserLanguage(supabase, userId, lang);
-    await ctx.answerCallbackQuery(t.languageSet);
-    await ctx.editMessageText(t.languageChangeSuccess);
-    return;
-  }
-
-  // Handle lang_ for NEW users
+  // Handle lang_ - Used for ALL language selection (new users, existing users, /start, /language)
+  // Format: lang_<language>_<optional_referral_code>
   if (data.startsWith('lang_')) {
     const parts = data.split('_');
     const lang = parts[1]; // 'en', 'ru', or 'es'
@@ -318,16 +234,16 @@ ${t.totalBalance}: $${((user.balance_usdt || 0) + (user.balance_usdc || 0) + (us
   }
 });
 
-// /language command
+// /language command - Same as /start, shows language selector
 bot.command('language', async (ctx) => {
   await ctx.reply(
     '🌍 Select your language / Выберите язык / Seleccione su idioma:',
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🇬🇧 English', callback_data: 'changelang_en' }],
-          [{ text: '🇷🇺 Русский', callback_data: 'changelang_ru' }],
-          [{ text: '🇪🇸 Español', callback_data: 'changelang_es' }]
+          [{ text: '🇬🇧 English', callback_data: 'lang_en_' }],
+          [{ text: '🇷🇺 Русский', callback_data: 'lang_ru_' }],
+          [{ text: '🇪🇸 Español', callback_data: 'lang_es_' }]
         ]
       }
     }
