@@ -118,20 +118,37 @@ export const autoDepositCrediter = {
 
     for (const tx of matchingTxs) {
       try {
-        // Check if we already credited this transaction
-        const { data: existingDeposit } = await supabase
+        // Check if we already credited this transaction by hash
+        const { data: existingByHash } = await supabase
           .from('deposits')
           .select('id, status')
           .eq('blockchain_hash', tx.blockchain_hash)
           .eq('user_id', staticAddr.user_id)
           .maybeSingle();
 
-        if (existingDeposit) {
-          if (existingDeposit.status === 'completed') {
-            console.log(`   ⏭️  TX ${tx.id} already credited (deposit record exists)`);
-            continue;
-          }
+        if (existingByHash?.status === 'completed') {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found by hash)`);
+          continue;
+        }
+
+        // ALSO check by payment_id (WestWallet tx.id)
+        const { data: existingByPaymentId } = await supabase
+          .from('deposits')
+          .select('id, status')
+          .eq('payment_id', tx.id.toString())
+          .eq('user_id', staticAddr.user_id)
+          .maybeSingle();
+
+        if (existingByPaymentId?.status === 'completed') {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found by payment_id)`);
+          continue;
+        }
+
+        const existingDeposit = existingByHash || existingByPaymentId;
+
+        if (existingDeposit?.status === 'pending') {
           // If pending, we'll update it below
+          console.log(`   📝 Updating pending deposit for TX ${tx.id}`);
         }
 
         // ALSO check operation_history to catch manual credits
