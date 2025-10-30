@@ -359,6 +359,8 @@ export const depositWalletService = {
             const cryptoType = (txData.currency || pendingDep.crypto_type || 'USDT').toUpperCase();
             const blockchainHash = txData.blockchain_hash;
 
+            console.log(`   🔍 DEBUG: txData.currency='${txData.currency}', pendingDep.crypto_type='${pendingDep.crypto_type}', final cryptoType='${cryptoType}'`);
+
             // Check if this specific deposit was already credited
             const { data: existingCredit } = await supabase
               .from('operation_history')
@@ -392,6 +394,7 @@ export const depositWalletService = {
 
             // Credit the balance
             console.log(`   💰 Crediting ${depositAmount} ${cryptoType} for ${pendingDep.order_id}`);
+            console.log(`      User ID: ${pendingDep.user_id}, Crypto: ${cryptoType}, Amount: ${depositAmount}`);
 
             // Get user data
             const { data: user } = await supabase
@@ -405,11 +408,22 @@ export const depositWalletService = {
               continue;
             }
 
+            // CRITICAL: Map generic crypto types to specific networks
+            // balance_usdt and balance_usdc are GENERATED COLUMNS!
+            let finalCryptoTypeForPending = cryptoType;
+            if (cryptoType === 'USDT') {
+              finalCryptoTypeForPending = 'USDTTRC';
+              console.log('   ⚠️  Generic USDT detected, mapping to USDTTRC');
+            } else if (cryptoType === 'USDC') {
+              finalCryptoTypeForPending = 'USDCERC';
+              console.log('   ⚠️  Generic USDC detected, mapping to USDCERC');
+            }
+
             // Map crypto type to database column
-            const cryptoColumn = `balance_${cryptoType.toLowerCase()}`;
+            const cryptoColumn = `balance_${finalCryptoTypeForPending.toLowerCase()}`;
             const validColumns = [
-              'balance_usdt', 'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
-              'balance_usdc', 'balance_usdcerc', 'balance_usdcbep',
+              'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+              'balance_usdcerc', 'balance_usdcbep',
               'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
             ];
 
@@ -421,14 +435,33 @@ export const depositWalletService = {
             const currentBalance = parseFloat(user[cryptoColumn] || 0);
             const newBalance = currentBalance + depositAmount;
 
+            console.log(`   📊 Balance update: ${cryptoColumn} = ${currentBalance} + ${depositAmount} = ${newBalance}`);
+
             // Update user balance
-            await supabase
+            console.log(`   🔄 Executing balance update: users.${cryptoColumn} = ${newBalance} WHERE id = ${pendingDep.user_id}`);
+
+            const { data: balanceUpdateData, error: balanceError } = await supabase
               .from('users')
               .update({ [cryptoColumn]: newBalance })
-              .eq('id', pendingDep.user_id);
+              .eq('id', pendingDep.user_id)
+              .select();
+
+            if (balanceError) {
+              console.error(`   ❌ Failed to update balance: ${balanceError.message}`);
+              console.error(`      Column: ${cryptoColumn}, User: ${pendingDep.user_id}, Amount: ${depositAmount}`);
+              console.error(`      Error details:`, JSON.stringify(balanceError, null, 2));
+              continue; // Skip this deposit
+            }
+
+            if (!balanceUpdateData || balanceUpdateData.length === 0) {
+              console.error(`   ❌ Balance update returned no rows! User ${pendingDep.user_id} might not exist.`);
+              continue;
+            }
+
+            console.log(`   ✅ Balance updated in database, new value: ${balanceUpdateData[0][cryptoColumn]}`);
 
             // Update deposit status
-            await supabase
+            const { error: depositError } = await supabase
               .from('deposits')
               .update({
                 status: 'completed',
@@ -440,8 +473,12 @@ export const depositWalletService = {
               })
               .eq('id', pendingDep.id);
 
+            if (depositError) {
+              console.error(`   ❌ Failed to update deposit: ${depositError.message}`);
+            }
+
             // Log to operation_history
-            await supabase
+            const { error: historyError } = await supabase
               .from('operation_history')
               .insert({
                 user_id: pendingDep.user_id,
@@ -451,6 +488,10 @@ export const depositWalletService = {
                 description: `Deposit completed: ${depositAmount} ${cryptoType} - ${blockchainHash}`,
                 status: 'completed'
               });
+
+            if (historyError) {
+              console.error(`   ❌ Failed to log operation: ${historyError.message}`);
+            }
 
             console.log(`   ✅ Credited ${depositAmount} ${cryptoType} to ${pendingDep.order_id} (${currentBalance} → ${newBalance})`);
           }
@@ -550,13 +591,27 @@ export const depositWalletService = {
       console.log('   User ID:', deposit.user_id);
       console.log('   Telegram ID:', deposit.users.telegram_id);
 
-      // Map crypto type to database column
-      const cryptoColumn = `balance_${cryptoType.toLowerCase()}`;
+      // CRITICAL: Map generic crypto types to specific networks
+      // balance_usdt and balance_usdc are GENERATED COLUMNS and cannot be updated directly!
+      let finalCryptoType = cryptoType;
 
-      // Verify column exists
+      if (cryptoType === 'USDT') {
+        // Default USDT to TRC20 (most common)
+        finalCryptoType = 'USDTTRC';
+        console.log('⚠️  Generic USDT detected, mapping to USDTTRC (default)');
+      } else if (cryptoType === 'USDC') {
+        // Default USDC to ERC20 (most common)
+        finalCryptoType = 'USDCERC';
+        console.log('⚠️  Generic USDC detected, mapping to USDCERC (default)');
+      }
+
+      // Map crypto type to database column
+      const cryptoColumn = `balance_${finalCryptoType.toLowerCase()}`;
+
+      // Verify column exists (excluding generated columns)
       const validColumns = [
-        'balance_usdt', 'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
-        'balance_usdc', 'balance_usdcerc', 'balance_usdcbep',
+        'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+        'balance_usdcerc', 'balance_usdcbep',
         'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
       ];
 
@@ -627,13 +682,68 @@ export const depositWalletService = {
   async getDepositStatus(orderId) {
     const { data: deposit } = await supabase
       .from('deposits')
-      .select('*')
+      .select('*, users(*)')
       .eq('order_id', orderId)
       .single();
 
     if (!deposit) throw new Error('Deposit not found');
 
-    // Add credited_amount field for frontend compatibility
+    // If deposit is still pending, actively check WestWallet for updates
+    if (deposit.status === 'pending' && deposit.payment_url) {
+      console.log(`🔍 CHECK-STATUS: Deposit pending, querying WestWallet for address ${deposit.payment_url}`);
+
+      try {
+        // Query WestWallet transaction history for this crypto type
+        const cryptoType = deposit.crypto_type || 'USDTTRC';
+        const txHistory = await westwalletService.getTransactionHistory(cryptoType, 20, 0);
+
+        if (txHistory && txHistory.length > 0) {
+          // Find transaction(s) for this address
+          const matchingTxs = txHistory.filter(tx => tx.address === deposit.payment_url && tx.status === 'completed');
+
+          if (matchingTxs.length > 0) {
+            console.log(`✅ CHECK-STATUS: Found ${matchingTxs.length} completed transaction(s) on WestWallet!`);
+
+            // Use the most recent one
+            const latestTx = matchingTxs[0];
+
+            // Process it immediately via callback
+            console.log(`🔄 CHECK-STATUS: Processing transaction ${latestTx.id} via callback...`);
+
+            await this.processCallback(deposit.order_id, {
+              id: latestTx.id.toString(),
+              amount: latestTx.amount,
+              address: latestTx.address,
+              currency: cryptoType,
+              blockchain_hash: latestTx.blockchain_hash || '',
+              blockchain_confirmations: latestTx.blockchain_confirmations || 0,
+              dest_tag: latestTx.dest_tag || ''
+            }, 'completed');
+
+            // Fetch updated deposit after processing
+            const { data: updatedDeposit } = await supabase
+              .from('deposits')
+              .select('*')
+              .eq('order_id', orderId)
+              .single();
+
+            console.log(`✅ CHECK-STATUS: Deposit updated to '${updatedDeposit.status}'`);
+
+            return {
+              ...updatedDeposit,
+              credited_amount: updatedDeposit.amount,
+              currency: updatedDeposit.crypto_type
+            };
+          } else {
+            console.log(`⏳ CHECK-STATUS: No completed transactions found yet on WestWallet`);
+          }
+        }
+      } catch (err) {
+        console.error(`⚠️  CHECK-STATUS: Error querying WestWallet:`, err.message);
+      }
+    }
+
+    // Return current deposit status
     return {
       ...deposit,
       credited_amount: deposit.amount,
