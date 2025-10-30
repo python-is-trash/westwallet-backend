@@ -248,7 +248,8 @@ export const autoDepositCrediter = {
     // Update or create deposit record
     if (existingDeposit) {
       // Update existing pending deposit
-      await supabase
+      console.log(`   ✏️  Updating deposit record ID: ${existingDeposit.id}, order_id: ${existingDeposit.order_id}`);
+      const { error: updateError } = await supabase
         .from('deposits')
         .update({
           status: 'completed',
@@ -259,6 +260,12 @@ export const autoDepositCrediter = {
           updated_at: new Date().toISOString()
         })
         .eq('id', existingDeposit.id);
+
+      if (updateError) {
+        console.error(`   ❌ Failed to update deposit: ${updateError.message}`);
+        return false;
+      }
+      console.log(`   ✅ Deposit ${existingDeposit.order_id} status updated to completed`);
     } else {
       // Create new deposit record (no pending deposit found)
       const label = `autocredit_${userId}_${Date.now()}`;
