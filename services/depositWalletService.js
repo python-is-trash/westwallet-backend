@@ -566,23 +566,43 @@ export const depositWalletService = {
       const blockchainHash = txData.blockchain_hash;
 
       // CRITICAL: Check if already credited to prevent double-credit
+      // Check by blockchain hash first (most reliable)
       if (blockchainHash) {
-        const { data: existingCredit } = await supabase
+        const { data: existingByHash } = await supabase
           .from('operation_history')
-          .select('id')
+          .select('id, description')
           .eq('user_id', deposit.user_id)
           .eq('operation_type', 'deposit')
-          .eq('amount', depositAmount)
-          .eq('crypto_type', cryptoType)
-          .eq('description', `Deposit completed: ${depositAmount} ${cryptoType} - ${blockchainHash}`)
+          .ilike('description', `%${blockchainHash}%`)
           .maybeSingle();
 
-        if (existingCredit) {
-          console.log('⏭️  SKIPPING: Already credited (found in operation_history)');
-          console.log('   Operation ID:', existingCredit.id);
+        if (existingByHash) {
+          console.log('⏭️  SKIPPING: Already credited (found by blockchain hash)');
+          console.log('   Operation ID:', existingByHash.id);
+          console.log('   Description:', existingByHash.description);
           console.log('   Blockchain Hash:', blockchainHash);
           return; // Skip crediting
         }
+      }
+
+      // Fallback: Check by amount + crypto + recent time (for deposits without hash)
+      const { data: recentOperations } = await supabase
+        .from('operation_history')
+        .select('id, amount')
+        .eq('user_id', deposit.user_id)
+        .eq('operation_type', 'deposit')
+        .eq('crypto_type', cryptoType)
+        .gte('created_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()); // Last 5 minutes
+
+      // Check if any recent operation has same amount (with tolerance for floating point)
+      const hasDuplicate = recentOperations?.some(op => {
+        const diff = Math.abs(parseFloat(op.amount) - depositAmount);
+        return diff < 0.000001; // Very small tolerance
+      });
+
+      if (hasDuplicate) {
+        console.log('⏭️  SKIPPING: Already credited (found duplicate in last 5 min)');
+        return; // Skip crediting
       }
 
       console.log('💰 Crediting user balance:');
