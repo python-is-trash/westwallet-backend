@@ -2,6 +2,32 @@ import { supabase } from '../db/supabase.js';
 import { westwalletService } from './westwalletService.js';
 import { moralisService } from './moralisService.js';
 
+// Helper function to extract network from crypto type
+function getNetwork(cryptoType) {
+  const type = cryptoType.toUpperCase();
+  if (type.includes('TRC')) return 'TRC20';
+  if (type.includes('ERC')) return 'ERC20';
+  if (type.includes('BEP')) return 'BEP20';
+  if (type.includes('TON') || type === 'TON') return 'TON';
+  if (type === 'BNB') return 'BEP20';
+  if (type === 'ETH') return 'ERC20';
+  if (type === 'SOL') return 'SOL';
+  return 'BEP20'; // Default fallback
+}
+
+// Helper function to get generic crypto type for user_deposit_addresses table
+// The table only accepts: 'USDT', 'USDC', 'ETH', 'BNB', 'TON', 'SOL'
+function getGenericCryptoType(cryptoType) {
+  const type = cryptoType.toUpperCase();
+  if (type.includes('USDT')) return 'USDT';
+  if (type.includes('USDC')) return 'USDC';
+  if (type === 'BNB' || type.includes('BNB')) return 'BNB';
+  if (type === 'ETH' || type.includes('ETH')) return 'ETH';
+  if (type === 'TON' || type.includes('TON')) return 'TON';
+  if (type === 'SOL' || type.includes('SOL')) return 'SOL';
+  return type; // Return as-is if already generic
+}
+
 export const initWestWallet = (publicKey, privateKey) => {
   if (publicKey && privateKey) {
     console.log('✅ WestWallet service initialized with keys');
@@ -136,8 +162,8 @@ export const depositWalletService = {
         console.log('🔢 Generated memo for new TON address:', addressData.dest_tag);
       }
 
-      // Save as static address for future reuse
-      await supabase
+      // Save as static address for future reuse (for auto-crediter)
+      const { data: savedAddress, error: saveError } = await supabase
         .from('user_deposit_addresses')
         .insert({
           user_id: user.id,
@@ -147,14 +173,24 @@ export const depositWalletService = {
           memo: addressData.dest_tag || null
         })
         .select()
-        .single()
-        .then(result => {
-          if (result.error) {
-            console.warn('⚠️  Could not save static address (may already exist):', result.error.message);
-          } else {
-            console.log('✅ Saved as static address for future reuse');
-          }
-        });
+        .single();
+
+      if (saveError) {
+        // If address already exists, update last_used_at
+        if (saveError.code === '23505') { // Unique violation
+          console.log('✅ Static address already exists, updating last_used_at');
+          await supabase
+            .from('user_deposit_addresses')
+            .update({ last_used_at: new Date().toISOString() })
+            .eq('user_id', user.id)
+            .eq('deposit_address', addressData.address)
+            .eq('crypto_type', baseCryptoType);
+        } else {
+          console.error('❌ Failed to save static address:', saveError.message, saveError);
+        }
+      } else {
+        console.log('✅ Saved new static address for auto-crediter:', savedAddress.id);
+      }
     }
 
     // Save deposit record with network info
