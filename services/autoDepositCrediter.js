@@ -148,11 +148,24 @@ export const autoDepositCrediter = {
           continue;
         }
 
-        const existingDeposit = existingByHash || existingByPaymentId;
+        // CRITICAL: Check for pending deposit by address
+        // This finds the original deposit created by frontend
+        const { data: existingByAddress } = await supabase
+          .from('deposits')
+          .select('id, status, order_id')
+          .eq('payment_url', staticAddr.deposit_address)
+          .eq('user_id', staticAddr.user_id)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const existingDeposit = existingByHash || existingByPaymentId || existingByAddress;
 
         if (existingDeposit?.status === 'pending') {
           // If pending, we'll update it below
-          console.log(`   📝 Updating pending deposit for TX ${tx.id}`);
+          const foundBy = existingByHash ? 'hash' : existingByPaymentId ? 'payment_id' : 'address';
+          console.log(`   📝 Updating pending deposit for TX ${tx.id} (found by ${foundBy}, order_id: ${existingDeposit.order_id})`);
         }
 
         // ALSO check operation_history to catch manual credits
@@ -247,8 +260,9 @@ export const autoDepositCrediter = {
         })
         .eq('id', existingDeposit.id);
     } else {
-      // Create new deposit record
+      // Create new deposit record (no pending deposit found)
       const label = `autocredit_${userId}_${Date.now()}`;
+      console.log(`   🆕 Creating new deposit record: ${label}`);
       await supabase
         .from('deposits')
         .insert({
