@@ -730,7 +730,7 @@ export const depositWalletService = {
             // Process it immediately via callback
             console.log(`🔄 CHECK-STATUS: Processing transaction ${latestTx.id} via callback...`);
 
-            await this.processCallback(deposit.order_id, {
+            await this.processCallback(deposit.order_id, 'completed', {
               id: latestTx.id.toString(),
               amount: latestTx.amount,
               address: latestTx.address,
@@ -738,7 +738,7 @@ export const depositWalletService = {
               blockchain_hash: latestTx.blockchain_hash || '',
               blockchain_confirmations: latestTx.blockchain_confirmations || 0,
               dest_tag: latestTx.dest_tag || ''
-            }, 'completed');
+            });
 
             // Fetch updated deposit after processing
             const { data: updatedDeposit } = await supabase
