@@ -201,33 +201,35 @@ export const investmentService = {
       endTime.setFullYear(endTime.getFullYear() + 100);
     }
 
-    // Determine the specific network that will be deducted from
-    // This is critical for returning funds to the correct balance column
+    // CRITICAL: Track which network will actually be deducted from
+    // We need to match the deduction logic in deductFromBalance()
     let paymentCrypto = cryptoType;
     if (cryptoType === 'USDT') {
-      // Check which USDT network has the most balance
+      // Match the deduction priority: BEP > TRC > ERC > TON
       const usdtbep = parseFloat(user.balance_usdtbep || 0);
-      const usdterc = parseFloat(user.balance_usdterc || 0);
       const usdttrc = parseFloat(user.balance_usdttrc || 0);
+      const usdterc = parseFloat(user.balance_usdterc || 0);
       const usdtton = parseFloat(user.balance_usdtton || 0);
 
-      // Find the network with highest balance
-      const balances = [
-        { network: 'USDTTRC', balance: usdttrc },
-        { network: 'USDTBEP', balance: usdtbep },
-        { network: 'USDTERC', balance: usdterc },
-        { network: 'USDTTON', balance: usdtton },
-      ];
-      const maxNetwork = balances.reduce((prev, curr) => curr.balance > prev.balance ? curr : prev);
-      paymentCrypto = maxNetwork.network;
-      console.log(`💡 Generic USDT → Using ${paymentCrypto} (balance: ${maxNetwork.balance})`);
+      // Use the FIRST network with sufficient balance (matches deduction logic)
+      if (usdtbep >= amount) {
+        paymentCrypto = 'USDTBEP';
+      } else if (usdtbep + usdttrc >= amount) {
+        // Will deduct from both, but return to primary (BEP)
+        paymentCrypto = 'USDTBEP';
+      } else if (usdtbep + usdttrc + usdterc >= amount) {
+        paymentCrypto = 'USDTBEP';
+      } else {
+        paymentCrypto = 'USDTBEP'; // Default
+      }
+      console.log(`💡 USDT investment will use ${paymentCrypto} for returns (BEP: ${usdtbep}, TRC: ${usdttrc}, ERC: ${usdterc}, TON: ${usdtton})`);
     } else if (cryptoType === 'USDC') {
-      // Check which USDC network has the most balance
+      // Match the deduction priority: ERC > BEP
       const usdcerc = parseFloat(user.balance_usdcerc || 0);
       const usdcbep = parseFloat(user.balance_usdcbep || 0);
 
-      paymentCrypto = usdcerc >= usdcbep ? 'USDCERC' : 'USDCBEP';
-      console.log(`💡 Generic USDC → Using ${paymentCrypto}`);
+      paymentCrypto = (usdcerc >= amount || usdcerc > 0) ? 'USDCERC' : 'USDCBEP';
+      console.log(`💡 USDC investment will use ${paymentCrypto} for returns (ERC: ${usdcerc}, BEP: ${usdcbep})`);
     }
 
     const { data: investment, error: invError } = await supabase
@@ -252,6 +254,7 @@ export const investmentService = {
     if (invError) throw invError;
 
     // Deduct amount from user's balance (smart deduction across networks)
+    // Use the generic cryptoType so it deducts from all networks smartly
     await deductFromBalance(user.id, cryptoType, amount);
 
     await supabase.from('operation_history').insert({
@@ -452,6 +455,16 @@ export const investmentService = {
     const endTime = new Date(investment.end_time);
     const currentProfit = await this.calculateCurrentProfit(investment);
 
+    console.log(`\n🎯 CLAIM PROFIT CALLED:`);
+    console.log(`   Investment ID: ${investmentId}`);
+    console.log(`   Amount Invested: ${investment.amount}`);
+    console.log(`   Crypto Type: ${investment.crypto_type}`);
+    console.log(`   Payment Crypto: ${investment.payment_crypto}`);
+    console.log(`   Current Profit: ${currentProfit}`);
+    console.log(`   Claim Type: ${claimType}`);
+    console.log(`   Last Claim Time: ${investment.last_claim_time}`);
+    console.log(`   Accumulated Profit: ${investment.accumulated_profit}`);
+
     // CRITICAL: Use payment_crypto (specific network) instead of crypto_type (generic)
     let claimCrypto = investment.payment_crypto || investment.crypto_type;
 
@@ -564,21 +577,42 @@ export const investmentService = {
 
     // cryptoColumn already uses claimCrypto which is the specific network
     // Get fresh balance to avoid stale data
+    console.log(`\n💰 CREDITING CLAIM:`);
+    console.log(`   Claimed Amount: ${claimedAmount}`);
+    console.log(`   Target Column: ${cryptoColumn}`);
+    console.log(`   Claim Crypto: ${claimCrypto}`);
+
     const { data: freshUser } = await supabase
       .from('users')
-      .select(cryptoColumn)
+      .select(`${cryptoColumn}, balance_usdt, balance_usdtbep, balance_usdttrc, balance_usdterc, balance_usdtton`)
       .eq('id', user.id)
       .single();
+
+    console.log(`   Current Balances:`, {
+      target: freshUser[cryptoColumn],
+      usdt_total: freshUser.balance_usdt,
+      usdtbep: freshUser.balance_usdtbep,
+      usdttrc: freshUser.balance_usdttrc,
+      usdterc: freshUser.balance_usdterc,
+      usdtton: freshUser.balance_usdtton
+    });
 
     const currentBalance = parseFloat(freshUser[cryptoColumn] || 0);
     const newBalance = currentBalance + claimedAmount;
 
-    console.log(`💰 Claiming ${claimedAmount} to ${cryptoColumn} (current: ${currentBalance}, new: ${newBalance})`);
+    console.log(`   ${cryptoColumn}: ${currentBalance} + ${claimedAmount} = ${newBalance}`);
 
-    await supabase
+    const { error: updateError } = await supabase
       .from('users')
       .update({ [cryptoColumn]: newBalance })
       .eq('id', user.id);
+
+    if (updateError) {
+      console.error(`❌ Failed to update balance:`, updateError);
+      throw updateError;
+    }
+
+    console.log(`✅ Balance updated successfully!`);
 
     await supabase.from('operation_history').insert({
       user_id: user.id,
