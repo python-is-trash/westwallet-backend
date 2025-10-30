@@ -335,7 +335,46 @@ export const depositWalletService = {
 
     if (deposit.status === 'completed') {
       console.log('⚠️  Deposit already processed:', label);
-      return;
+
+      // CRITICAL FIX: Check if there are OTHER pending deposits for this address
+      // This happens when user creates multiple deposits to the same static address
+      if (txData.address && txData.blockchain_hash && status === 'completed') {
+        console.log('   🔍 Checking for other pending deposits to the same address...');
+
+        const { data: otherPendingDeposits } = await supabase
+          .from('deposits')
+          .select('id, order_id, user_id, amount, crypto_type')
+          .eq('payment_url', txData.address)
+          .eq('user_id', deposit.user_id)
+          .eq('status', 'pending')
+          .neq('order_id', label); // Exclude current deposit
+
+        if (otherPendingDeposits && otherPendingDeposits.length > 0) {
+          console.log(`   ✅ Found ${otherPendingDeposits.length} other pending deposit(s) for same address`);
+
+          for (const pendingDep of otherPendingDeposits) {
+            console.log(`   📝 Updating pending deposit: ${pendingDep.order_id}`);
+
+            await supabase
+              .from('deposits')
+              .update({
+                status: 'completed',
+                amount: txData.amount || pendingDep.amount,
+                payment_id: txData.id || '',
+                blockchain_hash: txData.blockchain_hash || '',
+                blockchain_confirmations: txData.blockchain_confirmations || 0,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', pendingDep.id);
+
+            console.log(`   ✅ Updated ${pendingDep.order_id} to completed`);
+          }
+        } else {
+          console.log('   ℹ️  No other pending deposits found');
+        }
+      }
+
+      return; // Original deposit already processed
     }
 
     // If blockchain hash is provided, verify with Moralis
