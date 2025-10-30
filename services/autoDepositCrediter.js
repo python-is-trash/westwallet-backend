@@ -214,14 +214,24 @@ export const autoDepositCrediter = {
    */
   async creditTransaction(staticAddr, tx, existingDeposit) {
     const amount = parseFloat(tx.amount);
-    const cryptoType = tx.currency.toUpperCase();
+    let cryptoType = tx.currency.toUpperCase();
     const userId = staticAddr.user_id;
+
+    // CRITICAL: Map generic crypto types to specific networks
+    // balance_usdt and balance_usdc are GENERATED COLUMNS!
+    if (cryptoType === 'USDT') {
+      cryptoType = 'USDTTRC';
+      console.log('   ⚠️  Generic USDT detected, mapping to USDTTRC');
+    } else if (cryptoType === 'USDC') {
+      cryptoType = 'USDCERC';
+      console.log('   ⚠️  Generic USDC detected, mapping to USDCERC');
+    }
 
     // Map crypto type to balance column
     const cryptoColumn = `balance_${cryptoType.toLowerCase()}`;
     const validColumns = [
-      'balance_usdt', 'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
-      'balance_usdc', 'balance_usdcerc', 'balance_usdcbep',
+      'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+      'balance_usdcerc', 'balance_usdcbep',
       'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
     ];
 
