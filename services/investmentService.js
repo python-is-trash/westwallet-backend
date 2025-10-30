@@ -201,6 +201,35 @@ export const investmentService = {
       endTime.setFullYear(endTime.getFullYear() + 100);
     }
 
+    // Determine the specific network that will be deducted from
+    // This is critical for returning funds to the correct balance column
+    let paymentCrypto = cryptoType;
+    if (cryptoType === 'USDT') {
+      // Check which USDT network has the most balance
+      const usdtbep = parseFloat(user.balance_usdtbep || 0);
+      const usdterc = parseFloat(user.balance_usdterc || 0);
+      const usdttrc = parseFloat(user.balance_usdttrc || 0);
+      const usdtton = parseFloat(user.balance_usdtton || 0);
+
+      // Find the network with highest balance
+      const balances = [
+        { network: 'USDTTRC', balance: usdttrc },
+        { network: 'USDTBEP', balance: usdtbep },
+        { network: 'USDTERC', balance: usdterc },
+        { network: 'USDTTON', balance: usdtton },
+      ];
+      const maxNetwork = balances.reduce((prev, curr) => curr.balance > prev.balance ? curr : prev);
+      paymentCrypto = maxNetwork.network;
+      console.log(`💡 Generic USDT → Using ${paymentCrypto} (balance: ${maxNetwork.balance})`);
+    } else if (cryptoType === 'USDC') {
+      // Check which USDC network has the most balance
+      const usdcerc = parseFloat(user.balance_usdcerc || 0);
+      const usdcbep = parseFloat(user.balance_usdcbep || 0);
+
+      paymentCrypto = usdcerc >= usdcbep ? 'USDCERC' : 'USDCBEP';
+      console.log(`💡 Generic USDC → Using ${paymentCrypto}`);
+    }
+
     const { data: investment, error: invError } = await supabase
       .from('investments')
       .insert({
@@ -213,6 +242,7 @@ export const investmentService = {
         start_time: startTime.toISOString(),
         end_time: endTime.toISOString(),
         crypto_type: cryptoType,
+        payment_crypto: paymentCrypto, // Store the actual network used
         accumulated_profit: 0,
         last_claim_time: null,
       })
@@ -240,7 +270,8 @@ export const investmentService = {
     });
 
     if (user.referrer_id) {
-      await this.distributeReferralCommissions(user.id, amount, cryptoType, investment.id);
+      // Use paymentCrypto (specific network) for commissions
+      await this.distributeReferralCommissions(user.id, amount, paymentCrypto, investment.id);
     }
 
     return {
@@ -420,7 +451,31 @@ export const investmentService = {
     const now = new Date();
     const endTime = new Date(investment.end_time);
     const currentProfit = await this.calculateCurrentProfit(investment);
-    const cryptoColumn = `balance_${investment.crypto_type.toLowerCase()}`;
+
+    // CRITICAL: Use payment_crypto (specific network) instead of crypto_type (generic)
+    let claimCrypto = investment.payment_crypto || investment.crypto_type;
+
+    // Fallback mapping if payment_crypto is missing
+    if (claimCrypto === 'USDT') {
+      claimCrypto = 'USDTBEP'; // Default to BEP for USDT
+      console.log('⚠️  payment_crypto missing, defaulting USDT → USDTBEP');
+    } else if (claimCrypto === 'USDC') {
+      claimCrypto = 'USDCERC'; // Default to ERC for USDC
+      console.log('⚠️  payment_crypto missing, defaulting USDC → USDCERC');
+    }
+
+    const cryptoColumn = `balance_${claimCrypto.toLowerCase()}`;
+
+    // Validate column exists
+    const validColumns = [
+      'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+      'balance_usdcerc', 'balance_usdcbep',
+      'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
+    ];
+
+    if (!validColumns.includes(cryptoColumn)) {
+      throw new Error(`Invalid crypto type: ${claimCrypto}. Cannot claim to ${cryptoColumn}.`);
+    }
 
     let claimedAmount = 0;
     let newStatus = investment.status;
@@ -507,40 +562,31 @@ export const investmentService = {
       .update({ last_flexible_claim_time: new Date().toISOString() })
       .eq('id', user.id);
 
-    // CRITICAL FIX: For USDT/USDC, add to network-specific column, not aggregated column
-    const cryptoType = investment.crypto_type.toUpperCase();
-    let targetColumn = cryptoColumn;
-
-    if (cryptoType === 'USDT') {
-      // Add to BEP20 network by default (most common network)
-      targetColumn = 'balance_usdtbep';
-    } else if (cryptoType === 'USDC') {
-      // Add to ERC20 network by default
-      targetColumn = 'balance_usdcerc';
-    }
-
+    // cryptoColumn already uses claimCrypto which is the specific network
     // Get fresh balance to avoid stale data
     const { data: freshUser } = await supabase
       .from('users')
-      .select(targetColumn)
+      .select(cryptoColumn)
       .eq('id', user.id)
       .single();
 
-    const currentBalance = parseFloat(freshUser[targetColumn] || 0);
+    const currentBalance = parseFloat(freshUser[cryptoColumn] || 0);
     const newBalance = currentBalance + claimedAmount;
+
+    console.log(`💰 Claiming ${claimedAmount} to ${cryptoColumn} (current: ${currentBalance}, new: ${newBalance})`);
 
     await supabase
       .from('users')
-      .update({ [targetColumn]: newBalance })
+      .update({ [cryptoColumn]: newBalance })
       .eq('id', user.id);
 
     await supabase.from('operation_history').insert({
       user_id: user.id,
       operation_type: 'claim',
       amount: claimedAmount,
-      crypto_type: investment.crypto_type,
+      crypto_type: claimCrypto, // Use actual network, not generic type
       investment_id: investmentId,
-      description: `Claimed ${claimedAmount.toFixed(2)} ${investment.crypto_type} from ${plan.name}`,
+      description: `Claimed ${claimedAmount.toFixed(2)} ${claimCrypto} from ${plan.name}`,
       status: 'completed',
       metadata: {
         claim_type: claimType,
@@ -618,9 +664,39 @@ export const investmentService = {
 
       // Only auto-complete locked investments (freeze_principal = true)
       if (plan.freeze_principal === true) {
-        const cryptoColumn = `balance_${investment.crypto_type.toLowerCase()}`;
         const user = investment.users;
         const returnAmount = parseFloat(investment.return_amount);
+
+        // CRITICAL: Use payment_crypto (specific network) instead of crypto_type (generic)
+        // payment_crypto = 'USDTBEP', 'USDTTRC', etc.
+        // crypto_type might be generic 'USDT' which maps to balance_usdt (GENERATED COLUMN - cannot update!)
+        let returnCrypto = investment.payment_crypto || investment.crypto_type;
+
+        // Fallback mapping if payment_crypto is missing
+        if (returnCrypto === 'USDT') {
+          returnCrypto = 'USDTBEP'; // Default to BEP for USDT
+          console.log('⚠️  payment_crypto missing, defaulting USDT → USDTBEP');
+        } else if (returnCrypto === 'USDC') {
+          returnCrypto = 'USDCERC'; // Default to ERC for USDC
+          console.log('⚠️  payment_crypto missing, defaulting USDC → USDCERC');
+        }
+
+        const cryptoColumn = `balance_${returnCrypto.toLowerCase()}`;
+
+        // Validate column exists
+        const validColumns = [
+          'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+          'balance_usdcerc', 'balance_usdcbep',
+          'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
+        ];
+
+        if (!validColumns.includes(cryptoColumn)) {
+          console.error(`❌ Invalid crypto column: ${cryptoColumn} (from ${returnCrypto})`);
+          console.error(`   Investment ID: ${investment.id}, payment_crypto: ${investment.payment_crypto}, crypto_type: ${investment.crypto_type}`);
+          continue; // Skip this investment
+        }
+
+        console.log(`💰 Returning ${returnAmount} to ${cryptoColumn} for investment ${investment.unique_code}`);
 
         // Add return amount to user balance
         const newBalance = parseFloat(user[cryptoColumn] || 0) + returnAmount;
@@ -638,14 +714,14 @@ export const investmentService = {
           })
           .eq('id', investment.id);
 
-        // Log operation
+        // Log operation (use returnCrypto which is the actual network)
         await supabase.from('operation_history').insert({
           user_id: user.id,
           operation_type: 'auto_claim',
           amount: returnAmount,
-          crypto_type: investment.crypto_type,
+          crypto_type: returnCrypto, // Use actual network, not generic type
           investment_id: investment.id,
-          description: `Auto-completed matured investment: ${returnAmount} ${investment.crypto_type} from ${plan.name}`,
+          description: `Auto-completed matured investment: ${returnAmount} ${returnCrypto} from ${plan.name}`,
           status: 'completed',
         });
 
