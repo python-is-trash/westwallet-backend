@@ -169,18 +169,39 @@ export const autoDepositCrediter = {
         }
 
         // ALSO check operation_history to catch manual credits
-        const { data: existingOperation } = await supabase
+        // Check for blockchain hash first (most reliable)
+        const { data: existingOperationByHash } = await supabase
           .from('operation_history')
-          .select('id')
+          .select('id, description')
           .eq('user_id', staticAddr.user_id)
           .eq('operation_type', 'deposit')
-          .eq('amount', parseFloat(tx.amount))
-          .eq('crypto_type', tx.currency)
-          .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) // Last 30 days
+          .ilike('description', `%${tx.blockchain_hash || 'NOHASH'}%`)
+          .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
           .maybeSingle();
 
-        if (existingOperation) {
-          console.log(`   ⏭️  TX ${tx.id} already credited (found in operation history)`);
+        if (existingOperationByHash) {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found in operation history by hash)`);
+          continue;
+        }
+
+        // Check by amount + crypto + recent time (fallback)
+        const txAmount = parseFloat(tx.amount);
+        const { data: recentOperations } = await supabase
+          .from('operation_history')
+          .select('id, amount')
+          .eq('user_id', staticAddr.user_id)
+          .eq('operation_type', 'deposit')
+          .eq('crypto_type', tx.currency)
+          .gte('created_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()); // Last 5 minutes
+
+        // Check if any recent operation has same amount (with small tolerance for floating point)
+        const hasDuplicate = recentOperations?.some(op => {
+          const diff = Math.abs(parseFloat(op.amount) - txAmount);
+          return diff < 0.000001; // Very small tolerance
+        });
+
+        if (hasDuplicate) {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found duplicate in last 5 min)`);
           continue;
         }
 
