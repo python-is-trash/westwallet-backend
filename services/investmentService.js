@@ -234,6 +234,20 @@ export const investmentService = {
       status: 'completed',
     });
 
+    // Log to activity_logs for frontend display
+    await supabase.from('activity_logs').insert({
+      user_id: user.id,
+      activity_type: 'investment',
+      amount: amount,
+      crypto_type: cryptoType,
+      description: `Invested in: ${plan.name}`,
+      metadata: {
+        investment_id: investment.id,
+        plan_name: plan.name,
+        duration_hours: plan.duration_hours
+      },
+    });
+
     if (user.referrer_id) {
       await this.distributeReferralCommissions(user.id, amount, cryptoType, investment.id);
     }
@@ -538,6 +552,25 @@ export const investmentService = {
       description: `Claimed ${claimedAmount.toFixed(2)} ${investment.crypto_type} from ${plan.name}`,
       status: 'completed',
       metadata: { claim_type: claimType },
+    });
+
+    // Log to activity_logs for frontend display
+    const activityType = claimType === 'principal_and_profit' ? 'investment_closed' : 'investment_claim';
+    const activityDesc = claimType === 'principal_and_profit'
+      ? `Closed investment: ${plan.name}`
+      : `Claimed profit from: ${plan.name}`;
+
+    await supabase.from('activity_logs').insert({
+      user_id: user.id,
+      activity_type: activityType,
+      amount: claimedAmount,
+      crypto_type: investment.crypto_type,
+      description: activityDesc,
+      metadata: {
+        claim_type: claimType,
+        investment_id: investmentId,
+        plan_name: plan.name
+      },
     });
 
     return {
