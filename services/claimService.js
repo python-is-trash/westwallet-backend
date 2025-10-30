@@ -80,16 +80,18 @@ export const claimService = {
         description: `Claim completed: $${claim.amount} (${CLAIM_INTEREST_RATE * 100}% interest)`,
       });
 
-      // Log to activity_logs for frontend display
-      await supabase.from('activity_logs').insert({
+      // Log to operation_history for activity tracking
+      await supabase.from('operation_history').insert({
         user_id: claim.user_id,
-        activity_type: 'claim',
+        operation_type: 'claim',
         amount: claim.amount,
         crypto_type: claim.crypto_type || 'USDT',
         description: `Auto-claim completed`,
+        status: 'completed',
         metadata: {
           claim_id: claimId,
-          interest_rate: CLAIM_INTEREST_RATE
+          interest_rate: CLAIM_INTEREST_RATE,
+          claim_type: 'auto'
         },
       });
 
