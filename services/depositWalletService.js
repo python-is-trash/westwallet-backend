@@ -353,21 +353,106 @@ export const depositWalletService = {
           console.log(`   ✅ Found ${otherPendingDeposits.length} other pending deposit(s) for same address`);
 
           for (const pendingDep of otherPendingDeposits) {
-            console.log(`   📝 Updating pending deposit: ${pendingDep.order_id}`);
+            console.log(`   📝 Processing pending deposit: ${pendingDep.order_id}`);
 
+            const depositAmount = parseFloat(txData.amount || pendingDep.amount);
+            const cryptoType = (txData.currency || pendingDep.crypto_type || 'USDT').toUpperCase();
+            const blockchainHash = txData.blockchain_hash;
+
+            // Check if this specific deposit was already credited
+            const { data: existingCredit } = await supabase
+              .from('operation_history')
+              .select('id')
+              .eq('user_id', pendingDep.user_id)
+              .eq('operation_type', 'deposit')
+              .eq('amount', depositAmount)
+              .eq('crypto_type', cryptoType)
+              .eq('description', `Deposit completed: ${depositAmount} ${cryptoType} - ${blockchainHash}`)
+              .maybeSingle();
+
+            if (existingCredit) {
+              console.log(`   ⏭️  Deposit ${pendingDep.order_id} already credited, just updating status`);
+
+              // Just update status
+              await supabase
+                .from('deposits')
+                .update({
+                  status: 'completed',
+                  amount: depositAmount,
+                  payment_id: txData.id || '',
+                  blockchain_hash: blockchainHash || '',
+                  blockchain_confirmations: txData.blockchain_confirmations || 0,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', pendingDep.id);
+
+              console.log(`   ✅ Updated ${pendingDep.order_id} status to completed (already credited)`);
+              continue;
+            }
+
+            // Credit the balance
+            console.log(`   💰 Crediting ${depositAmount} ${cryptoType} for ${pendingDep.order_id}`);
+
+            // Get user data
+            const { data: user } = await supabase
+              .from('users')
+              .select('*')
+              .eq('id', pendingDep.user_id)
+              .single();
+
+            if (!user) {
+              console.error(`   ❌ User not found: ${pendingDep.user_id}`);
+              continue;
+            }
+
+            // Map crypto type to database column
+            const cryptoColumn = `balance_${cryptoType.toLowerCase()}`;
+            const validColumns = [
+              'balance_usdt', 'balance_usdtbep', 'balance_usdterc', 'balance_usdttrc', 'balance_usdtton',
+              'balance_usdc', 'balance_usdcerc', 'balance_usdcbep',
+              'balance_bnb', 'balance_eth', 'balance_ton', 'balance_sol'
+            ];
+
+            if (!validColumns.includes(cryptoColumn)) {
+              console.error(`   ❌ Invalid crypto column: ${cryptoColumn}`);
+              continue;
+            }
+
+            const currentBalance = parseFloat(user[cryptoColumn] || 0);
+            const newBalance = currentBalance + depositAmount;
+
+            // Update user balance
+            await supabase
+              .from('users')
+              .update({ [cryptoColumn]: newBalance })
+              .eq('id', pendingDep.user_id);
+
+            // Update deposit status
             await supabase
               .from('deposits')
               .update({
                 status: 'completed',
-                amount: txData.amount || pendingDep.amount,
+                amount: depositAmount,
                 payment_id: txData.id || '',
-                blockchain_hash: txData.blockchain_hash || '',
+                blockchain_hash: blockchainHash || '',
                 blockchain_confirmations: txData.blockchain_confirmations || 0,
                 updated_at: new Date().toISOString()
               })
               .eq('id', pendingDep.id);
 
-            console.log(`   ✅ Updated ${pendingDep.order_id} to completed`);
+            // Log to operation_history
+            await supabase
+              .from('operation_history')
+              .insert({
+                user_id: pendingDep.user_id,
+                operation_type: 'deposit',
+                amount: depositAmount,
+                crypto_type: cryptoType,
+                description: `Deposit completed: ${depositAmount} ${cryptoType} - ${blockchainHash}`,
+                status: 'completed'
+              });
+
+            console.log(`   ✅ Credited ${depositAmount} ${cryptoType} to ${pendingDep.order_id} (${currentBalance} → ${newBalance})`);
           }
         } else {
           console.log('   ℹ️  No other pending deposits found');
