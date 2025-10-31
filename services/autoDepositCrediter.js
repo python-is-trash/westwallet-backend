@@ -168,6 +168,21 @@ export const autoDepositCrediter = {
           console.log(`   📝 Updating pending deposit for TX ${tx.id} (found by ${foundBy}, order_id: ${existingDeposit.order_id})`);
         }
 
+        // CRITICAL: Check if we already auto-credited this specific WestWallet TX ID
+        // This catches cases where blockchain_hash might be missing/different
+        const { data: existingAutoCredit } = await supabase
+          .from('deposits')
+          .select('id, status, order_id')
+          .eq('payment_id', tx.id.toString())
+          .eq('user_id', staticAddr.user_id)
+          .eq('status', 'completed')
+          .maybeSingle();
+
+        if (existingAutoCredit) {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found completed deposit with payment_id)`);
+          continue;
+        }
+
         // ALSO check operation_history to catch manual credits
         // Check for blockchain hash first (most reliable)
         const { data: existingOperationByHash } = await supabase
@@ -184,7 +199,22 @@ export const autoDepositCrediter = {
           continue;
         }
 
-        // Check by amount + crypto + recent time (fallback)
+        // Check by WestWallet TX ID in operation history description (catches re-credits)
+        const { data: existingOperationByTxId } = await supabase
+          .from('operation_history')
+          .select('id, description')
+          .eq('user_id', staticAddr.user_id)
+          .eq('operation_type', 'deposit')
+          .ilike('description', `%TX:${tx.id}%`)
+          .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()) // Last 7 days
+          .maybeSingle();
+
+        if (existingOperationByTxId) {
+          console.log(`   ⏭️  TX ${tx.id} already credited (found in operation history by TX ID)`);
+          continue;
+        }
+
+        // Check by amount + crypto + recent time (fallback for same-amount deposits)
         const txAmount = parseFloat(tx.amount);
         const { data: recentOperations } = await supabase
           .from('operation_history')
@@ -192,7 +222,7 @@ export const autoDepositCrediter = {
           .eq('user_id', staticAddr.user_id)
           .eq('operation_type', 'deposit')
           .eq('crypto_type', tx.currency)
-          .gte('created_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()); // Last 5 minutes
+          .gte('created_at', new Date(Date.now() - 3 * 60 * 1000).toISOString()); // Last 3 minutes
 
         // Check if any recent operation has same amount (with small tolerance for floating point)
         const hasDuplicate = recentOperations?.some(op => {
@@ -201,7 +231,7 @@ export const autoDepositCrediter = {
         });
 
         if (hasDuplicate) {
-          console.log(`   ⏭️  TX ${tx.id} already credited (found duplicate in last 5 min)`);
+          console.log(`   ⏭️  TX ${tx.id} already credited (found duplicate in last 3 min)`);
           continue;
         }
 
@@ -327,13 +357,13 @@ export const autoDepositCrediter = {
       return false;
     }
 
-    // Log to operation history
+    // Log to operation history (include TX ID for duplicate detection)
     await supabase.from('operation_history').insert({
       user_id: userId,
       operation_type: 'deposit',
       amount: amount,
       crypto_type: cryptoType,
-      description: `Auto-credited deposit: ${amount} ${cryptoType} - ${tx.blockchain_hash || 'N/A'} [AUTO-CREDITER]`,
+      description: `Auto-credited deposit: ${amount} ${cryptoType} - Hash:${tx.blockchain_hash || 'N/A'} TX:${tx.id} [AUTO-CREDITER]`,
       status: 'completed'
     });
 
