@@ -183,6 +183,31 @@ export const autoDepositCrediter = {
           continue;
         }
 
+        // NUCLEAR OPTION: Check for multiple autocredit records for same address + amount in last hour
+        // This catches when blockchain_hash AND payment_id somehow differ
+        const { data: recentAutoCredits, error: autoCreditError } = await supabase
+          .from('deposits')
+          .select('id, order_id, amount, created_at')
+          .eq('user_id', staticAddr.user_id)
+          .eq('crypto_type', tx.currency)
+          .ilike('order_id', 'autocredit_%')
+          .gte('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString()) // Last hour
+          .order('created_at', { ascending: false });
+
+        if (recentAutoCredits && recentAutoCredits.length > 0) {
+          // Check if we have a recent autocredit with same amount (within tolerance)
+          const txAmount = parseFloat(tx.amount);
+          const hasSameAmountRecently = recentAutoCredits.some(dep => {
+            const diff = Math.abs(parseFloat(dep.amount) - txAmount);
+            return diff < 0.000001;
+          });
+
+          if (hasSameAmountRecently) {
+            console.log(`   ⏭️  TX ${tx.id} already credited (found recent autocredit with same amount)`);
+            continue;
+          }
+        }
+
         // ALSO check operation_history to catch manual credits
         // Check for blockchain hash first (most reliable)
         const { data: existingOperationByHash } = await supabase
