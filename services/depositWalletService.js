@@ -763,20 +763,20 @@ export const depositWalletService = {
             // Use the most recent one
             const latestTx = matchingTxs[0];
 
-            // CRITICAL FIX: Check if this transaction was already processed by checking blockchain_hash
+            // CRITICAL FIX: Check if this transaction was already processed
+            // Method 1: Check by blockchain_hash in description
             if (latestTx.blockchain_hash) {
-              const { data: existingOperation } = await supabase
+              const { data: existingByHash } = await supabase
                 .from('operation_history')
-                .select('id, blockchain_hash')
+                .select('id')
                 .eq('user_id', deposit.user_id)
                 .eq('operation_type', 'deposit')
-                .not('blockchain_hash', 'is', null)
                 .ilike('description', `%${latestTx.blockchain_hash}%`)
                 .maybeSingle();
 
-              if (existingOperation) {
+              if (existingByHash) {
                 console.log(`⏭️  CHECK-STATUS: Transaction ${latestTx.id} already credited (found by hash ${latestTx.blockchain_hash})`);
-                console.log(`   Operation ID: ${existingOperation.id}`);
+                console.log(`   Operation ID: ${existingByHash.id}`);
 
                 // Update deposit status to completed but DON'T send notification
                 await supabase
@@ -793,6 +793,40 @@ export const depositWalletService = {
                   already_credited: true
                 };
               }
+            }
+
+            // Method 2: Check by amount + crypto + recent time (within 10 minutes)
+            const txAmount = parseFloat(latestTx.amount);
+            const { data: recentOperations } = await supabase
+              .from('operation_history')
+              .select('id, amount, created_at')
+              .eq('user_id', deposit.user_id)
+              .eq('operation_type', 'deposit')
+              .eq('crypto_type', cryptoType)
+              .gte('created_at', new Date(Date.now() - 10 * 60 * 1000).toISOString()); // Last 10 minutes
+
+            const hasDuplicate = recentOperations?.some(op => {
+              const diff = Math.abs(parseFloat(op.amount) - txAmount);
+              return diff < 0.000001; // Very small tolerance
+            });
+
+            if (hasDuplicate) {
+              console.log(`⏭️  CHECK-STATUS: Transaction ${latestTx.id} already credited (found by amount ${txAmount} in last 10 min)`);
+
+              // Update deposit status to completed but DON'T send notification
+              await supabase
+                .from('deposits')
+                .update({ status: 'completed' })
+                .eq('order_id', orderId);
+
+              // Return current status without triggering callback
+              return {
+                ...deposit,
+                status: 'completed',
+                credited_amount: deposit.amount,
+                currency: deposit.crypto_type,
+                already_credited: true
+              };
             }
 
             // Process it immediately via callback ONLY if not already credited
