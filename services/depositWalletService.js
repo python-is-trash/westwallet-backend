@@ -764,10 +764,22 @@ export const depositWalletService = {
             console.log(`✅ CHECK-STATUS: Found ${matchingTxs.length} completed transaction(s) on WestWallet!`);
 
             // CRITICAL FIX: Loop through ALL transactions to find one that hasn't been credited yet
+            // AND was created AFTER this deposit record was created
             let uncreditedTx = null;
+            const depositCreatedAt = new Date(deposit.created_at);
 
             for (const tx of matchingTxs) {
               console.log(`🔍 CHECK-STATUS: Checking transaction ${tx.id} (${tx.amount} ${cryptoType})`);
+
+              // CRITICAL: Skip transactions that are OLDER than this deposit
+              // This prevents crediting old transactions when user creates a new deposit to same address
+              if (tx.created_at) {
+                const txCreatedAt = new Date(tx.created_at);
+                if (txCreatedAt < depositCreatedAt) {
+                  console.log(`   ⏭️  TX ${tx.id} is TOO OLD (created ${tx.created_at}, deposit created ${deposit.created_at})`);
+                  continue; // Skip old transactions
+                }
+              }
 
               // Check if this specific transaction was already credited
               // Method 1: Check by blockchain_hash
@@ -800,8 +812,8 @@ export const depositWalletService = {
                 continue; // Skip to next transaction
               }
 
-              // This transaction hasn't been credited yet!
-              console.log(`   ✅ TX ${tx.id} is NEW and not credited yet!`);
+              // This transaction hasn't been credited yet AND is newer than the deposit!
+              console.log(`   ✅ TX ${tx.id} is NEW and not credited yet (created ${tx.created_at})!`);
               uncreditedTx = tx;
               break; // Found the new one, stop searching
             }
