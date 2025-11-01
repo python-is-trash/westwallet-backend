@@ -392,7 +392,8 @@ export const depositWalletService = {
             console.log(`   📝 Processing pending deposit: ${pendingDep.order_id}`);
 
             const depositAmount = parseFloat(txData.amount || pendingDep.amount);
-            const cryptoType = (txData.currency || pendingDep.crypto_type || 'USDT').toUpperCase();
+            // CRITICAL: Use pendingDep.crypto_type first (more specific than txData.currency)
+            const cryptoType = (pendingDep.crypto_type || txData.currency || 'USDT').toUpperCase();
             const blockchainHash = txData.blockchain_hash;
 
             console.log(`   🔍 DEBUG: txData.currency='${txData.currency}', pendingDep.crypto_type='${pendingDep.crypto_type}', final cryptoType='${cryptoType}'`);
@@ -597,7 +598,9 @@ export const depositWalletService = {
 
     // If payment is complete, add balance to user
     if (status === 'completed') {
-      const cryptoType = (txData.currency || deposit.crypto_type || 'USDT').toUpperCase();
+      // CRITICAL: Use deposit.crypto_type first (more specific than txData.currency)
+      // WestWallet might send generic 'USDT' but we want the network-specific type like 'USDTERC'
+      const cryptoType = (deposit.crypto_type || txData.currency || 'USDT').toUpperCase();
       const depositAmount = parseFloat(txData.amount || deposit.amount);
       const blockchainHash = txData.blockchain_hash;
 
