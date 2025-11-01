@@ -763,7 +763,39 @@ export const depositWalletService = {
             // Use the most recent one
             const latestTx = matchingTxs[0];
 
-            // Process it immediately via callback
+            // CRITICAL FIX: Check if this transaction was already processed by checking blockchain_hash
+            if (latestTx.blockchain_hash) {
+              const { data: existingOperation } = await supabase
+                .from('operation_history')
+                .select('id, blockchain_hash')
+                .eq('user_id', deposit.user_id)
+                .eq('operation_type', 'deposit')
+                .not('blockchain_hash', 'is', null)
+                .ilike('description', `%${latestTx.blockchain_hash}%`)
+                .maybeSingle();
+
+              if (existingOperation) {
+                console.log(`⏭️  CHECK-STATUS: Transaction ${latestTx.id} already credited (found by hash ${latestTx.blockchain_hash})`);
+                console.log(`   Operation ID: ${existingOperation.id}`);
+
+                // Update deposit status to completed but DON'T send notification
+                await supabase
+                  .from('deposits')
+                  .update({ status: 'completed' })
+                  .eq('order_id', orderId);
+
+                // Return current status without triggering callback
+                return {
+                  ...deposit,
+                  status: 'completed',
+                  credited_amount: deposit.amount,
+                  currency: deposit.crypto_type,
+                  already_credited: true
+                };
+              }
+            }
+
+            // Process it immediately via callback ONLY if not already credited
             console.log(`🔄 CHECK-STATUS: Processing transaction ${latestTx.id} via callback...`);
 
             await this.processCallback(deposit.order_id, 'completed', {
