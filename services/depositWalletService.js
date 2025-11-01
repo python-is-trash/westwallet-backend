@@ -522,7 +522,7 @@ export const depositWalletService = {
                 operation_type: 'deposit',
                 amount: depositAmount,
                 crypto_type: cryptoType,
-                description: `Deposit completed: ${depositAmount} ${cryptoType} - ${blockchainHash}`,
+                description: `Deposit completed: ${depositAmount} ${cryptoType} - Hash: ${blockchainHash} - TX ID: ${txData.id || 'N/A'}`,
                 status: 'completed'
               });
 
@@ -720,7 +720,7 @@ export const depositWalletService = {
         operation_type: 'deposit',
         amount: depositAmount,
         crypto_type: cryptoType,
-        description: `Deposit completed: ${depositAmount} ${cryptoType} - ${txData.blockchain_hash || 'N/A'}${verificationNote}`,
+        description: `Deposit completed: ${depositAmount} ${cryptoType} - Hash: ${txData.blockchain_hash || 'N/A'} - TX ID: ${txData.id || 'N/A'}${verificationNote}`,
       });
 
       if (historyError) {
@@ -763,86 +763,71 @@ export const depositWalletService = {
           if (matchingTxs.length > 0) {
             console.log(`✅ CHECK-STATUS: Found ${matchingTxs.length} completed transaction(s) on WestWallet!`);
 
-            // Use the most recent one
-            const latestTx = matchingTxs[0];
+            // CRITICAL FIX: Loop through ALL transactions to find one that hasn't been credited yet
+            let uncreditedTx = null;
 
-            // CRITICAL FIX: Check if this transaction was already processed
-            // Method 1: Check by blockchain_hash in description
-            if (latestTx.blockchain_hash) {
-              const { data: existingByHash } = await supabase
+            for (const tx of matchingTxs) {
+              console.log(`🔍 CHECK-STATUS: Checking transaction ${tx.id} (${tx.amount} ${cryptoType})`);
+
+              // Check if this specific transaction was already credited
+              // Method 1: Check by blockchain_hash
+              if (tx.blockchain_hash) {
+                const { data: existingByHash } = await supabase
+                  .from('operation_history')
+                  .select('id')
+                  .eq('user_id', deposit.user_id)
+                  .eq('operation_type', 'deposit')
+                  .ilike('description', `%${tx.blockchain_hash}%`)
+                  .maybeSingle();
+
+                if (existingByHash) {
+                  console.log(`   ⏭️  TX ${tx.id} already credited (found by hash)`);
+                  continue; // Skip to next transaction
+                }
+              }
+
+              // Method 2: Check by WestWallet transaction ID in description
+              const { data: existingById } = await supabase
                 .from('operation_history')
                 .select('id')
                 .eq('user_id', deposit.user_id)
                 .eq('operation_type', 'deposit')
-                .ilike('description', `%${latestTx.blockchain_hash}%`)
+                .ilike('description', `%${tx.id}%`)
                 .maybeSingle();
 
-              if (existingByHash) {
-                console.log(`⏭️  CHECK-STATUS: Transaction ${latestTx.id} already credited (found by hash ${latestTx.blockchain_hash})`);
-                console.log(`   Operation ID: ${existingByHash.id}`);
-
-                // Update deposit status to completed but DON'T send notification
-                await supabase
-                  .from('deposits')
-                  .update({ status: 'completed' })
-                  .eq('order_id', orderId);
-
-                // Return current status without triggering callback
-                return {
-                  ...deposit,
-                  status: 'completed',
-                  credited_amount: deposit.amount,
-                  currency: deposit.crypto_type,
-                  already_credited: true
-                };
+              if (existingById) {
+                console.log(`   ⏭️  TX ${tx.id} already credited (found by TX ID)`);
+                continue; // Skip to next transaction
               }
+
+              // This transaction hasn't been credited yet!
+              console.log(`   ✅ TX ${tx.id} is NEW and not credited yet!`);
+              uncreditedTx = tx;
+              break; // Found the new one, stop searching
             }
 
-            // Method 2: Check by amount + crypto + recent time (within 10 minutes)
-            const txAmount = parseFloat(latestTx.amount);
-            const { data: recentOperations } = await supabase
-              .from('operation_history')
-              .select('id, amount, created_at')
-              .eq('user_id', deposit.user_id)
-              .eq('operation_type', 'deposit')
-              .eq('crypto_type', cryptoType)
-              .gte('created_at', new Date(Date.now() - 10 * 60 * 1000).toISOString()); // Last 10 minutes
-
-            const hasDuplicate = recentOperations?.some(op => {
-              const diff = Math.abs(parseFloat(op.amount) - txAmount);
-              return diff < 0.000001; // Very small tolerance
-            });
-
-            if (hasDuplicate) {
-              console.log(`⏭️  CHECK-STATUS: Transaction ${latestTx.id} already credited (found by amount ${txAmount} in last 10 min)`);
-
-              // Update deposit status to completed but DON'T send notification
-              await supabase
-                .from('deposits')
-                .update({ status: 'completed' })
-                .eq('order_id', orderId);
-
-              // Return current status without triggering callback
+            // If no uncredited transaction found, deposit is still pending (waiting for NEW payment)
+            if (!uncreditedTx) {
+              console.log(`⏳ CHECK-STATUS: All ${matchingTxs.length} transaction(s) already credited. Waiting for NEW payment...`);
               return {
                 ...deposit,
-                status: 'completed',
+                status: 'pending',
                 credited_amount: deposit.amount,
-                currency: deposit.crypto_type,
-                already_credited: true
+                currency: deposit.crypto_type
               };
             }
 
-            // Process it immediately via callback ONLY if not already credited
-            console.log(`🔄 CHECK-STATUS: Processing transaction ${latestTx.id} via callback...`);
+            // Process the uncredited transaction
+            console.log(`🔄 CHECK-STATUS: Processing NEW transaction ${uncreditedTx.id} via callback...`);
 
             await this.processCallback(deposit.order_id, 'completed', {
-              id: latestTx.id.toString(),
-              amount: latestTx.amount,
-              address: latestTx.address,
+              id: uncreditedTx.id.toString(),
+              amount: uncreditedTx.amount,
+              address: uncreditedTx.address,
               currency: cryptoType,
-              blockchain_hash: latestTx.blockchain_hash || '',
-              blockchain_confirmations: latestTx.blockchain_confirmations || 0,
-              dest_tag: latestTx.dest_tag || ''
+              blockchain_hash: uncreditedTx.blockchain_hash || '',
+              blockchain_confirmations: uncreditedTx.blockchain_confirmations || 0,
+              dest_tag: uncreditedTx.dest_tag || ''
             });
 
             // Fetch updated deposit after processing
