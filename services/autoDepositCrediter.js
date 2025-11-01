@@ -122,6 +122,30 @@ export const autoDepositCrediter = {
 
     for (const tx of matchingTxs) {
       try {
+        // CRITICAL: Check for pending deposit by address FIRST
+        // This finds the original deposit created by frontend
+        const { data: existingByAddress } = await supabase
+          .from('deposits')
+          .select('id, status, order_id, created_at')
+          .eq('payment_url', staticAddr.deposit_address)
+          .eq('user_id', staticAddr.user_id)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        // CRITICAL: If there's a pending deposit, ONLY credit transactions AFTER deposit creation
+        // This prevents crediting old transactions when user creates a new deposit
+        if (existingByAddress && tx.created_at) {
+          const depositCreatedAt = new Date(existingByAddress.created_at);
+          const txCreatedAt = new Date(tx.created_at);
+
+          if (txCreatedAt < depositCreatedAt) {
+            console.log(`   ⏭️  TX ${tx.id} is TOO OLD for pending deposit (TX: ${tx.created_at}, Deposit: ${existingByAddress.created_at})`);
+            continue; // Skip old transactions
+          }
+        }
+
         // Check if we already credited this transaction by hash
         const { data: existingByHash } = await supabase
           .from('deposits')
@@ -147,18 +171,6 @@ export const autoDepositCrediter = {
           console.log(`   ⏭️  TX ${tx.id} already credited (found by payment_id)`);
           continue;
         }
-
-        // CRITICAL: Check for pending deposit by address
-        // This finds the original deposit created by frontend
-        const { data: existingByAddress } = await supabase
-          .from('deposits')
-          .select('id, status, order_id')
-          .eq('payment_url', staticAddr.deposit_address)
-          .eq('user_id', staticAddr.user_id)
-          .eq('status', 'pending')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
 
         const existingDeposit = existingByHash || existingByPaymentId || existingByAddress;
 
