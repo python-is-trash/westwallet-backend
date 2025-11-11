@@ -289,10 +289,10 @@ export const depositWalletService = {
           return { success: false, message: `Transaction already credited`, duplicate: true };
         }
 
-        // If deposit is already completed, skip it!
-        if (existingByTxId.status === 'completed') {
-          console.log(`   ⏭️  Already completed, skipping to prevent double-credit`);
-          return { success: false, message: `Transaction already completed`, duplicate: true };
+        // If deposit is already credited, skip it!
+        if (existingByTxId.status === 'credited' || existingByTxId.status === 'completed') {
+          console.log(`   ⏭️  Already ${existingByTxId.status}, skipping to prevent double-credit`);
+          return { success: false, message: `Transaction already ${existingByTxId.status}`, duplicate: true };
         }
 
         // If deposit is cancelled, DON'T USE IT - let code create new one below
@@ -409,8 +409,8 @@ export const depositWalletService = {
       status: deposit.status
     });
 
-    if (deposit.status === 'completed') {
-      console.log('⚠️  Deposit already processed:', label);
+    if (deposit.status === 'credited' || deposit.status === 'completed') {
+      console.log('⚠️  Deposit already processed:', label, `(status: ${deposit.status})`);
 
       // CRITICAL FIX: Check if there are OTHER pending deposits for this address
       // This happens when user creates multiple deposits to the same static address
@@ -443,7 +443,7 @@ export const depositWalletService = {
                 .from('deposits')
                 .select('id, user_id, users(telegram_id, username)')
                 .eq('blockchain_hash', blockchainHash)
-                .eq('status', 'completed')
+                .in('status', ['completed', 'credited'])
                 .maybeSingle();
 
               if (existingByHashGlobal) {
@@ -470,7 +470,7 @@ export const depositWalletService = {
               await supabase
                 .from('deposits')
                 .update({
-                  status: 'completed',
+                  status: 'credited',
                   amount: depositAmount,
                   payment_id: txData.id || null,
                   blockchain_hash: blockchainHash || null,
@@ -479,7 +479,7 @@ export const depositWalletService = {
                 })
                 .eq('id', pendingDep.id);
 
-              console.log(`   ✅ Updated ${pendingDep.order_id} status to completed (already credited)`);
+              console.log(`   ✅ Updated ${pendingDep.order_id} status to credited (already credited)`);
               continue;
             }
 
@@ -555,7 +555,7 @@ export const depositWalletService = {
             const { error: depositError } = await supabase
               .from('deposits')
               .update({
-                status: 'completed',
+                status: 'credited',
                 amount: depositAmount,
                 payment_id: txData.id || null,
                 blockchain_hash: blockchainHash || null,
@@ -576,7 +576,7 @@ export const depositWalletService = {
                 operation_type: 'deposit',
                 amount: depositAmount,
                 crypto_type: cryptoType,
-                description: `Deposit completed: ${depositAmount} ${cryptoType} - Hash: ${blockchainHash} - TX ID: ${txData.id || 'N/A'}`,
+                description: `Deposit credited: ${depositAmount} ${cryptoType} - Hash: ${blockchainHash} - TX ID: ${txData.id || 'N/A'}`,
                 status: 'completed'
               });
 
@@ -635,7 +635,7 @@ export const depositWalletService = {
     // Build update object - only include blockchain_hash and payment_id if they don't already exist
     // This prevents duplicate key errors and prevents overwriting existing IDs
     const updateData = {
-      status: status === 'completed' ? 'completed' : 'pending',
+      status: status === 'completed' ? 'credited' : 'pending',
       amount: actualAmount, // Update to actual received amount
       blockchain_confirmations: txData.blockchain_confirmations || 0,
       updated_at: new Date().toISOString()
@@ -984,24 +984,24 @@ export const depositWalletService = {
       }
     }
 
-    // ✅ Check if deposit is already completed (in process of being credited)
-    if (deposit.status === 'completed') {
-      console.log(`⏭️  CHECK-STATUS: Deposit already completed (currently being credited)`);
+    // ✅ Check if deposit is already credited (in process of being credited)
+    if (deposit.status === 'credited' || deposit.status === 'completed') {
+      console.log(`⏭️  CHECK-STATUS: Deposit already ${deposit.status} (currently being credited)`);
 
       // Check if this was JUST completed (within last 2 minutes)
       const completedAt = new Date(deposit.updated_at || deposit.created_at);
       const now = new Date();
       const minutesAgo = (now - completedAt) / 1000 / 60;
 
-      // Return completed status with deposit_id for frontend tracking
-      console.log(`   ✅ Deposit completed: ${label}`);
+      // Return credited status with deposit_id for frontend tracking
+      console.log(`   ✅ Deposit ${deposit.status}: ${label}`);
       return {
         ...deposit,
-        status: 'completed',
+        status: 'credited',
         deposit_id: label,
         credited_amount: deposit.amount,
         currency: deposit.crypto_type,
-        message: `✅ Deposit completed! ${deposit.amount} ${deposit.crypto_type} was credited to your account.`
+        message: `✅ Deposit credited! ${deposit.amount} ${deposit.crypto_type} was credited to your account.`
       };
     }
 
@@ -1128,9 +1128,9 @@ export const depositWalletService = {
 
             // If no uncredited transaction found, check if THIS deposit record is completed
             if (!uncreditedTx) {
-              // If THIS deposit is completed, user is trying to check old deposit
-              if (deposit.status === 'completed') {
-                console.log(`✅ CHECK-STATUS: This deposit already completed (amount: ${deposit.amount})`);
+              // If THIS deposit is credited, user is trying to check old deposit
+              if (deposit.status === 'credited' || deposit.status === 'completed') {
+                console.log(`✅ CHECK-STATUS: This deposit already ${deposit.status} (amount: ${deposit.amount})`);
                 return {
                   ...deposit,
                   already_credited: true,
@@ -1294,7 +1294,7 @@ export const depositWalletService = {
 
     // Return current deposit status
     // Check if deposit was already credited
-    const alreadyCredited = deposit.status === 'completed';
+    const alreadyCredited = deposit.status === 'credited' || deposit.status === 'completed';
 
     return {
       ...deposit,
