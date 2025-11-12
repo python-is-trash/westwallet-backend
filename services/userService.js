@@ -147,7 +147,28 @@ export const userService = {
       .from('users')
       .select('id')
       .eq('telegram_id', parseInt(telegramId))
-      .single();
+      .maybeSingle();
+
+    if (!user) {
+      return {
+        totalReferrals: 0,
+        level1: 0,
+        level2: 0,
+        level3: 0,
+        level4: 0,
+        level5: 0,
+        newLast7Days: 0,
+        activeLast7Days: 0,
+        investmentsLast7Days: 0,
+        totalEarnings: 0,
+        level1Earnings: 0,
+        level2Earnings: 0,
+        level3Earnings: 0,
+        level4Earnings: 0,
+        level5Earnings: 0,
+        unclaimedEarnings: 0,
+      };
+    }
 
     const { data: refs } = await supabase
       .from('referrals')
