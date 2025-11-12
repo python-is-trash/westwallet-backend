@@ -403,16 +403,16 @@ router.post('/send-pnl-to-bot', async (req, res) => {
     console.log('✅ PNL screenshot uploaded:', imageUrl);
 
     // Send via Telegram bot
-    const BOT_TOKEN = process.env.BOT_TOKEN;
-    if (!BOT_TOKEN) {
-      throw new Error('BOT_TOKEN not configured');
+    const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+    if (!TELEGRAM_BOT_TOKEN) {
+      throw new Error('TELEGRAM_BOT_TOKEN not configured');
     }
 
     // Create caption with embedded link
     const caption = `<a href="${imageUrl}">📊 FastBit – Share Your PNL</a>\n\n💰 <b>Current Profit:</b> ${profit} ${crypto}\n\n✨ <b>Join me and start earning:</b>\n${referralLink}`;
 
     // Send photo with caption
-    const telegramResponse = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+    const telegramResponse = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
