@@ -631,29 +631,23 @@ bot.command('referral', async (ctx) => {
     const level1Earnings = earnings?.filter(e => e.level === 1).reduce((s, e) => s + convertToUSD(parseFloat(e.amount), e.crypto_type), 0) || 0;
     const level2Earnings = earnings?.filter(e => e.level === 2).reduce((s, e) => s + convertToUSD(parseFloat(e.amount), e.crypto_type), 0) || 0;
     const level3Earnings = earnings?.filter(e => e.level === 3).reduce((s, e) => s + convertToUSD(parseFloat(e.amount), e.crypto_type), 0) || 0;
-    const level4Earnings = earnings?.filter(e => e.level === 4).reduce((s, e) => s + convertToUSD(parseFloat(e.amount), e.crypto_type), 0) || 0;
-    const level5Earnings = earnings?.filter(e => e.level === 5).reduce((s, e) => s + convertToUSD(parseFloat(e.amount), e.crypto_type), 0) || 0;
 
     const botUsername = ctx.me.username;
     const referralLink = `https://t.me/${botUsername}?start=ref_${user.referral_code}`;
 
-    const totalEarnings = level1Earnings + level2Earnings + level3Earnings + level4Earnings + level5Earnings;
+    const totalEarnings = level1Earnings + level2Earnings + level3Earnings;
 
     const message =
-      `👥 Referral Program (5 Levels)\n\n` +
+      `👥 Referral Program (3 Levels)\n\n` +
       `🔗 Your Referral Link:\n${referralLink}\n\n` +
       `📊 Your Stats:\n` +
       `  Level 1: ${level1} refs (15% commission)\n` +
       `  Level 2: ${level2} refs (10% commission)\n` +
-      `  Level 3: ${level3} refs (5% commission)\n` +
-      `  Level 4: ${level4} refs (3% commission)\n` +
-      `  Level 5: ${level5} refs (2% commission)\n\n` +
+      `  Level 3: ${level3} refs (5% commission)\n\n` +
       `💰 Total Earnings (USD):\n` +
       `  Level 1: $${level1Earnings.toFixed(2)}\n` +
       `  Level 2: $${level2Earnings.toFixed(2)}\n` +
       `  Level 3: $${level3Earnings.toFixed(2)}\n` +
-      `  Level 4: $${level4Earnings.toFixed(2)}\n` +
-      `  Level 5: $${level5Earnings.toFixed(2)}\n` +
       `  Total: $${totalEarnings.toFixed(2)}\n\n` +
       `💡 Tip: Use /referral <level> to see your referrals\n` +
       `Example: /referral 1`;
