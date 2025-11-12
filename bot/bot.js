@@ -537,11 +537,17 @@ bot.command('referral', async (ctx) => {
   const level = args[0] ? parseInt(args[0]) : null;
 
   try {
-    const { data: user } = await supabase
+    const { data: user, error: userError } = await supabase
       .from('users')
       .select('referral_code, id')
       .eq('telegram_id', userId)
-      .single();
+      .maybeSingle();
+
+    if (!user || userError) {
+      console.error('User not found for referral command:', userId, userError);
+      await ctx.reply('❌ Error loading referral data. Please try again.');
+      return;
+    }
 
     if (level && level >= 1 && level <= 3) {
       const { data: refs } = await supabase
@@ -1069,7 +1075,13 @@ bot.command('userinfo', async (ctx) => {
 
     const activeInvestments = investments?.filter(i => i.status === 'active') || [];
     const completedInvestments = investments?.filter(i => i.status === 'completed') || [];
-    const totalActiveInvestment = activeInvestments.reduce((sum, i) => sum + parseFloat(i.amount || 0), 0);
+
+    // Convert active investments to USD
+    const totalActiveInvestmentUSD = activeInvestments.reduce((sum, i) => {
+      const amount = parseFloat(i.amount || 0);
+      const rate = cryptoRates[i.crypto_type || 'USDT'] || 1;
+      return sum + (amount * rate);
+    }, 0);
 
     // Get referrer info
     let referrerInfo = 'Нет реферера';
@@ -1129,7 +1141,7 @@ bot.command('userinfo', async (ctx) => {
       (parseFloat(user.balance_bnb || 0) * cryptoRates.BNB) +
       (parseFloat(user.balance_eth || 0) * cryptoRates.ETH);
 
-    const totalValue = totalBalance + totalActiveInvestment;
+    const totalValue = totalBalance + totalActiveInvestmentUSD;
 
     // Build message
     let message = `📊 Информация о пользователе ${user.telegram_id}\n\n`;
@@ -1143,7 +1155,7 @@ bot.command('userinfo', async (ctx) => {
     message += `💰 Финансовая информация:\n`;
     message += `• Сумма депозитов: $${totalDepositsUSD.toFixed(2)} USD\n`;
     message += `• Сумма выводов: $${totalWithdrawalsUSD.toFixed(2)} USD\n`;
-    message += `• Активные инвестиции: $${totalActiveInvestment.toFixed(2)} USD\n`;
+    message += `• Активные инвестиции: $${totalActiveInvestmentUSD.toFixed(2)} USD\n`;
     message += `• Баланс (все криптовалюты): $${totalBalance.toFixed(2)} USD\n`;
     message += `• Реферальный баланс: $${totalRefEarningsUSD.toFixed(2)} USD\n`;
     message += `• 💎 Активные инвестиции + Баланс: $${totalValue.toFixed(2)} USD\n\n`;
@@ -1184,7 +1196,7 @@ bot.command('userinfo', async (ctx) => {
     message += `• 👤 Реферер: ${referrerInfo}\n\n`;
 
     message += `📊 Инвестиции:\n`;
-    message += `• Активные: ${activeInvestments.length} (${totalActiveInvestment.toFixed(2)} USDT)\n`;
+    message += `• Активные: ${activeInvestments.length} ($${totalActiveInvestmentUSD.toFixed(2)} USD)\n`;
     message += `• Завершенные: ${completedInvestments.length}\n\n`;
 
     message += `📅 Активность:\n`;
