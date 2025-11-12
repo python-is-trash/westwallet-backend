@@ -507,14 +507,14 @@ export const investmentService = {
         // Not matured yet, no profit available
         return 0;
       }
-      // Matured: return full profit
+      // Matured: return remaining profit (total profit - already claimed)
       const dailyReturnRate = parseFloat(plan.daily_return) / 100;
-      const maxProfit = investment.amount * dailyReturnRate;
-      const accumulatedProfit = parseFloat(investment.accumulated_profit || 0);
-      return Math.max(0, maxProfit + accumulatedProfit);
+      const totalProfit = investment.amount * dailyReturnRate;
+      const alreadyClaimed = parseFloat(investment.accumulated_profit || 0);
+      return Math.max(0, totalProfit - alreadyClaimed);
     }
 
-    // FLEXIBLE INVESTMENTS: Profit accrues over time
+    // FLEXIBLE INVESTMENTS: Profit accrues over time since last claim
     const elapsedMs = now - lastClaimTime;
 
     // Calculate profit based on elapsed time relative to plan duration
@@ -531,9 +531,9 @@ export const investmentService = {
     const maxProfit = investment.amount * dailyReturnRate;
     const profit = maxProfit * progress;
 
-    const accumulatedProfit = parseFloat(investment.accumulated_profit || 0);
-
-    return Math.max(0, profit + accumulatedProfit);
+    // For flexible investments, accumulated_profit should always be 0
+    // because last_claim_time resets the calculation window
+    return Math.max(0, profit);
   },
 
   async canClaim(investment, userId) {
@@ -710,10 +710,13 @@ export const investmentService = {
         claimedAmount = currentProfit;
         newStatus = 'active';
 
+        // CRITICAL: ADD claimed profit to accumulated_profit, don't reset!
+        const newAccumulated = parseFloat(investment.accumulated_profit || 0) + currentProfit;
+
         await supabase
           .from('investments')
           .update({
-            accumulated_profit: 0,
+            accumulated_profit: newAccumulated,
             last_claim_time: new Date().toISOString(),
           })
           .eq('id', investmentId);
@@ -873,22 +876,22 @@ export const investmentService = {
       if (plan.freeze_principal === true) {
         const user = investment.users;
 
-        // 🚨 CRITICAL FIX: Check if user claimed profit early
-        // If last_claim_time exists, user claimed profit early
-        // Only return principal in that case
+        // 🚨 CRITICAL FIX: ALWAYS return principal + profit for FROZEN investments
+        // accumulated_profit tracks how much profit was claimed EARLY (before maturity)
+        // So: returnAmount = principal + (totalProfit - alreadyClaimedProfit)
         const principal = parseFloat(investment.amount);
         const fullReturnAmount = parseFloat(investment.return_amount);
-
-        // If user claimed profit early (last_claim_time is set), only return principal
-        // Otherwise return full amount (principal + profit)
-        const userClaimedEarly = investment.last_claim_time !== null;
-        const returnAmount = userClaimedEarly ? principal : fullReturnAmount;
+        const totalProfit = fullReturnAmount - principal;
+        const alreadyClaimedProfit = parseFloat(investment.accumulated_profit || 0);
+        const remainingProfit = totalProfit - alreadyClaimedProfit;
+        const returnAmount = principal + remainingProfit;
 
         console.log(`\n💰 Investment ${investment.unique_code} matured:`);
         console.log(`   Principal: ${principal}`);
-        console.log(`   Full Return: ${fullReturnAmount}`);
-        console.log(`   User Claimed Early: ${userClaimedEarly ? 'YES' : 'NO'}`);
-        console.log(`   Returning: ${returnAmount}`);
+        console.log(`   Total Profit: ${totalProfit}`);
+        console.log(`   Already Claimed Profit: ${alreadyClaimedProfit}`);
+        console.log(`   Remaining Profit: ${remainingProfit}`);
+        console.log(`   Returning: ${returnAmount} (${principal} principal + ${remainingProfit} profit)`);
 
         // CRITICAL: Use payment_crypto (specific network) instead of crypto_type (generic)
         // payment_crypto = 'USDTBEP', 'USDTTRC', etc.
