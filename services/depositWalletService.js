@@ -166,60 +166,13 @@ export const depositWalletService = {
       }
     }
 
-    // BULLETPROOF FIX: Prevent spam-clicking from creating multiple pending deposits
-    // Strategy: ONLY reuse PENDING deposits! If last deposit is credited, CREATE NEW ONE!
-    // This ensures user always gets fresh deposit tracking for new payments
+    // 🚫 DO NOT CREATE PENDING DEPOSIT HERE!
+    // Deposits are ONLY created when IPN arrives from WestWallet with actual payment!
+    // This prevents spam deposits and ensures accurate tracking.
 
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const depositLabel = label; // Label for tracking only, no DB record created yet
 
-    // Check for PENDING deposits ONLY for this address in last 30 minutes
-    const { data: recentDeposits } = await supabase
-      .from('deposits')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('payment_url', addressData.address)
-      .eq('status', 'pending') // ONLY pending! Don't reuse credited/completed!
-      .gte('created_at', thirtyMinutesAgo) // Only deposits from last 30 minutes
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    let depositLabel;
-    if (recentDeposits && recentDeposits.length > 0) {
-      const existingDeposit = recentDeposits[0];
-      const ageMinutes = Math.floor((Date.now() - new Date(existingDeposit.created_at).getTime()) / 1000 / 60);
-
-      console.log(`♻️  REUSING existing PENDING deposit: ${existingDeposit.order_id} (age: ${ageMinutes}m)`);
-      console.log('   🚫 NOT creating new pending deposit - user can check status of existing one');
-      depositLabel = existingDeposit.order_id;
-    } else {
-      // CREATE NEW pending deposit record ONLY if no recent deposits exist
-      console.log('💾 Creating NEW pending deposit record:', label);
-
-      const { data: newDeposit, error: depositError } = await supabase
-        .from('deposits')
-        .insert({
-          user_id: user.id,
-          order_id: label,
-          amount: amount,
-          crypto_type: finalCryptoType,
-          payment_url: addressData.address,
-          status: 'pending',
-          blockchain_hash: null,
-          blockchain_confirmations: 0,
-        })
-        .select()
-        .single();
-
-      if (depositError) {
-        console.error('⚠️  Failed to create deposit record:', depositError.message);
-        depositLabel = label; // Use generated label as fallback
-      } else {
-        console.log('✅ Deposit record created:', newDeposit.id);
-        depositLabel = newDeposit.order_id;
-      }
-    }
-
-    console.log('✅ Static address ready:', addressData.address, finalCryptoType, '(pending deposit tracking enabled)');
+    console.log('✅ Static address ready:', addressData.address, finalCryptoType, '(deposit will be created when payment arrives)');
 
     // Build QR code data
     // Don't include amount - user can deposit any amount they want
